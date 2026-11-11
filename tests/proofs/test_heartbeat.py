@@ -398,7 +398,7 @@ def canonical(value: Any) -> str:
 
 
 OURS = answer_all(heartbeat, publisher, gen, registry)
-ANSWERS = "0" * 64  # pinned once measured
+ANSWERS = "d5ec9a7fafdd7c08734edf3b425d0c2d3c8bee4012bf9bdeb43264587c5e7be1"
 
 
 def test_this_sides_answers_are_pinned() -> None:
