@@ -1,10 +1,11 @@
-"""The ranking generation: immutable records, one canonical digest and a strict JSON reader.
+"""The ranking generation: immutable records, one canonical digest, a strict reader, its Arrow form.
 
-Standard library only. Behaviour, wire text and digest bytes are the reference's
+Behaviour, wire text, digest bytes and the Arrow schema are the reference's
 (`src/sextant/ranking/generation.py` at `06562bec0898a7203f4eaf69086ced83d2477e6b`). The class is
 the hand-written custom data of nautechsystems/nautilus_trader v2.0.0rc8
 `d53849b216e20f2c122ca01b4dd0da377638b186` (`docs/concepts/data/index.md:691-693`); its
-`customdataclass` cannot carry a frozen record with Decimals, sequences and optional fields.
+`customdataclass` maps only str, bool, float, int, bytes, dict and InstrumentId fields
+(`python/nautilus_trader/model/custom.py:195-216`), so it cannot carry Decimals or nested records.
 A Decimal travels as its `str()` text, never normalised; RFC 8785 is rejected in the manifest.
 
 The reader refuses duplicate keys, non-integer numbers, missing or unknown keys and wrong types.
@@ -13,7 +14,7 @@ type and range checks, but it cannot show duplicate keys, number spelling beyond
 trailing text, key order, whitespace or escapes. On both paths a Decimal string the constructor
 accepts in a non-canonical spelling is re-spelled by `str()`, as the reference does.
 
-Part 3c adds the Arrow methods and the engine registration; importing registers nothing.
+Part 3d adds the engine view, its Arrow callbacks and the registration; importing registers nothing.
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, ClassVar
+
+import pyarrow as pa
 
 SCHEMA_VERSION = 2
 TYPE_NAME = "RankingGeneration"
@@ -414,3 +417,98 @@ def _read_generation(value: Any) -> RankingGeneration:
         status=GenerationStatus(item["status"]),
         rows=tuple(_read_row(row) for row in _array(item["rows"])),
     )
+
+
+# Recursive reasons stay one canonical JSON string column at each boundary: an Arrow struct
+# cannot be recursive, and neither a depth cap nor a lossy flattening is taken.
+_COUNT_FIELDS = [pa.field(name, pa.int64()) for name in _COUNTS]
+_FEATURE = pa.struct(
+    [
+        pa.field("name", pa.string(), nullable=False),
+        pa.field("value", pa.string()),
+        pa.field("ts_event", pa.int64()),
+        pa.field("known_at", pa.int64()),
+        pa.field("partial", pa.bool_(), nullable=False),
+        pa.field("completed", pa.bool_(), nullable=False),
+    ]
+)
+_ROW = pa.struct(
+    [
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("instrument_id", pa.string()),
+        pa.field("score", pa.string()),
+        pa.field("rank", pa.int64()),
+        pa.field("features", pa.list_(_FEATURE), nullable=False),
+        pa.field("partial", pa.bool_(), nullable=False),
+        pa.field("completed", pa.bool_(), nullable=False),
+        pa.field("focus_eligible", pa.bool_()),
+        pa.field("reasons", pa.string(), nullable=False),
+    ]
+)
+_IDENTITY = pa.struct(
+    [
+        pa.field("producer_epoch", pa.string(), nullable=False),
+        pa.field("sequence", pa.int64(), nullable=False),
+        pa.field("previous_sequence", pa.int64()),
+    ]
+)
+_COVERAGE = pa.struct(
+    [
+        pa.field("state", pa.string(), nullable=False),
+        pa.field("complete", pa.bool_(), nullable=False),
+        *_COUNT_FIELDS,
+        pa.field("reasons", pa.string(), nullable=False),
+    ]
+)
+_TOP = (
+    ("type", pa.string()),
+    ("schema_version", pa.int64()),
+    ("generation_id", _IDENTITY),
+    ("session_date", pa.string()),
+    ("input_cutoff", pa.int64()),
+    ("ts_event", pa.int64()),
+    ("ts_init", pa.int64()),
+    ("known_at", pa.int64()),
+    ("method_version", pa.string()),
+    ("profile_version", pa.string()),
+    ("ranker_version", pa.string()),
+    ("coverage", _COVERAGE),
+    ("status", pa.string()),
+    ("rows", pa.list_(_ROW)),
+)
+ARROW_SCHEMA = pa.schema(
+    [pa.field(name, kind, nullable=False) for name, kind in _TOP],
+    metadata={b"type": TYPE_NAME.encode(), b"schema_version": str(SCHEMA_VERSION).encode()},
+)
+
+
+def encode_arrow(records: Sequence[RankingGeneration]) -> pa.RecordBatch:
+    rows = []
+    for record in records:
+        row = record.to_dict()
+        row["coverage"]["reasons"] = _dumps(row["coverage"]["reasons"]).decode()
+        for item in row["rows"]:
+            item["reasons"] = _dumps(item["reasons"]).decode()
+        rows.append(row)
+    return pa.RecordBatch.from_pylist(rows, schema=ARROW_SCHEMA)
+
+
+def _load_reasons(holder: Any) -> None:
+    if not isinstance(holder, dict) or not isinstance(holder.get("reasons"), str):
+        raise ValueError("reasons must be canonical JSON text")
+    holder["reasons"] = _strict_loads(holder["reasons"])
+
+
+def decode_arrow(batch: pa.RecordBatch) -> list[RankingGeneration]:
+    """Arrow does not enforce a non-null field's data, so a null is refused here."""
+    if not batch.schema.equals(ARROW_SCHEMA, check_metadata=True):
+        raise ValueError("unknown ranking Arrow schema")
+    if any(column.null_count for column in batch.columns):
+        raise ValueError("null in a required ranking column")
+    records = []
+    for row in batch.to_pylist():
+        _load_reasons(row["coverage"])
+        for item in row["rows"]:
+            _load_reasons(item)
+        records.append(RankingGeneration.from_json(row))
+    return records

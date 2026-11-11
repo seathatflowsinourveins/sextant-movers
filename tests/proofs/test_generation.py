@@ -503,7 +503,7 @@ def test_the_digest_changes_with_any_single_field() -> None:
     assert len(set(digests)) == len(digests) == 40
 
 
-def test_the_module_imports_the_standard_library_only() -> None:
+def test_the_module_imports_the_standard_library_and_pyarrow_only() -> None:
     source = Path(gen.__file__).read_text()
     names = {
         ((node.module or "") if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
@@ -511,7 +511,8 @@ def test_the_module_imports_the_standard_library_only() -> None:
         if isinstance(node, ast.Import | ast.ImportFrom)
         for alias in node.names
     }
-    assert names <= set(sys.stdlib_module_names) | {"__future__"}
+    assert names <= set(sys.stdlib_module_names) | {"__future__", "pyarrow"}
+    assert "pyarrow" in names
     assert (Path(gen.__file__).parent / "__init__.py").read_bytes() == b""
 
 
@@ -643,7 +644,11 @@ print("PARITY " + json.dumps({
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
     if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+        pytest.skip(
+            "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof; the "
+            "second names the reference's own interpreter because its module imports the engine "
+            "and pyarrow at its top, at the reference's versions"
+        )
     blob = (Path(src) / "sextant" / "ranking" / "generation.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
@@ -653,7 +658,7 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     done = subprocess.run(
         [python, "-I", "-c", script],
         input=json.dumps(ours),
-        env={"MOVERS_REFERENCE_SRC": src},
+        env={"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)},
         capture_output=True,
         text=True,
         timeout=600,
