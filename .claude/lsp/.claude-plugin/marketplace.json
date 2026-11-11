@@ -1,0 +1,9 @@
+{
+  "name": "sextant-lsp",
+  "description": "Two verbatim official Claude Code LSP plugins; provenance in ORIGINS.md",
+  "owner": { "name": "Sextant" },
+  "plugins": [
+    { "name": "pyright-lsp", "source": "./plugins/pyright-lsp" },
+    { "name": "typescript-lsp", "source": "./plugins/typescript-lsp" }
+  ]
+}
