@@ -503,15 +503,16 @@ def test_the_digest_changes_with_any_single_field() -> None:
     assert len(set(digests)) == len(digests) == 40
 
 
-def test_the_module_imports_the_standard_library_and_pyarrow_only() -> None:
+def test_the_module_imports_the_standard_library_pyarrow_and_the_engine_model_only() -> None:
     source = Path(gen.__file__).read_text()
     names = {
-        ((node.module or "") if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
+        (node.module or "") if isinstance(node, ast.ImportFrom) else alias.name
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Import | ast.ImportFrom)
         for alias in node.names
     }
-    assert names <= set(sys.stdlib_module_names) | {"__future__", "pyarrow"}
+    allowed = set(sys.stdlib_module_names) | {"__future__", "pyarrow"}
+    assert {n for n in names if n.split(".")[0] not in allowed} == {"nautilus_trader.model"}
     assert "pyarrow" in names
     assert (Path(gen.__file__).parent / "__init__.py").read_bytes() == b""
 
