@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from sextant_movers.ranking import generation as gen
 from sextant_movers.ranking.generation import (
     Coverage,
     CoverageState,
@@ -33,8 +35,6 @@ from sextant_movers.ranking.generation import (
     canonical_bytes,
     generation_digest,
 )
-
-from sextant_movers.ranking import generation as gen
 
 MAX = 2**63 - 1
 REFERENCE_BLOB = "35e946323d784ec6c8c0166e2145ed7747f57728"  # git blob of the reference file
@@ -169,7 +169,7 @@ def test_records_are_frozen_hashable_and_hold_tuples() -> None:
             with pytest.raises(FrozenInstanceError):
                 setattr(record, field.name, None)
         assert hash(record) == hash(record)
-    assert RankingReason("c", None, [REASON]).children == (REASON,)
+    assert RankingReason("c", None, [REASON]).children == (REASON,)  # type: ignore
     assert isinstance(RankingGeneration(**{**BASE[RankingGeneration], "rows": [ROW]}).rows, tuple)
 
 
@@ -280,6 +280,7 @@ OPTIONAL = {
     "coverage.reason": {"detail"},
     "reason.child": {"detail"},
     "row": {"instrument_id", "score", "rank", "focus_eligible"},
+    "row.reason": {"detail"},
     "feature": {"value", "ts_event", "known_at"},
 }
 
@@ -478,7 +479,7 @@ def single_field_changes() -> list[RankingGeneration]:
         cover(reasons=()),
         with_row(symbol="ZZZT3.TEST"),
         with_row(instrument_id=None),
-        with_row(score=D("25")),
+        with_row(score=D("25.0")),
         with_row(rank=3),
         with_row(features=row.features[:1]),
         with_row(partial=True),
@@ -505,7 +506,7 @@ def test_the_digest_changes_with_any_single_field() -> None:
 def test_the_module_imports_the_standard_library_only() -> None:
     source = Path(gen.__file__).read_text()
     names = {
-        (node.module if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
+        ((node.module or "") if isinstance(node, ast.ImportFrom) else alias.name).split(".")[0]
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Import | ast.ImportFrom)
         for alias in node.names

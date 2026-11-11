@@ -5,6 +5,12 @@ What we do and where the practice comes from. Nothing enters the harness without
 
 > The secret-scan row and the **Public gate** section are seeded from Sextant's `docs/manifest.md` (see [ORIGINS.md](../ORIGINS.md)), so the first PR through this gate can name a row; paths and issue numbers in those rows are Sextant's, and two links to files not in this tree are plain text. **This repository's pins** are this repository's own rows. Delete a row when its practice stops.
 
+## Ranking
+
+| Practice or pick | Source, pinned | How it is applied | Proof |
+|---|---|---|---|
+| Ranking generation record and its canonical digest | the reference's `src/sextant/ranking/generation.py` at `06562bec0898a7203f4eaf69086ced83d2477e6b`; nautechsystems/nautilus_trader@v2.0.0rc8 `d53849b216e20f2c122ca01b4dd0da377638b186`:`docs/concepts/data/index.md:691-693` | Canonical bytes: `json.dumps`, sorted keys, compact, ASCII escapes, no NaN; Decimals as `str()` text; the reader refuses duplicate keys and non-integer numbers. Keep ours: trailofbits/rfc8785.py@v0.1.4 `4d9b161f6054301d98d0566e813d020fb019ee10` is the rejected runner-up: it refuses integers beyond 2^53-1 (`src/rfc8785/_impl.py:23-24,203-204`), writes non-ASCII raw (`:91`) and orders keys by UTF-16 units (`:238`) | `tests/proofs/test_generation.py`, with `-m local` parity against the reference |
+
 ## In use
 
 | Practice or pick | Source, pinned | How it is applied | Proof |
