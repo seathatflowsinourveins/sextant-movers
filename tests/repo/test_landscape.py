@@ -4,7 +4,7 @@ Every top-level package or module under src/sextant_movers/ is named in some row
 so coverage cannot drift (docs/design.md, "Landscape coverage"; ADR-0002 item 5). Each row of the
 Capabilities and runner-up tables holds one of the landscape's own four states; an adopted or
 candidate row has a 40-hex pin or says "not pinned yet:" and why; a no-source row says why; a
-rejected row covers no package. The package imports neither Sextant nor a trading client.
+rejected row covers no package. The package imports neither Sextant nor an order-placing client.
 
 Source: this repository's pattern of a Markdown table a test reads
 (tests/proofs/test_manifest_union.py). The tables and the states are read from the file; the test
@@ -20,9 +20,11 @@ LANDSCAPE = ROOT / "docs" / "landscape.md"
 PACKAGE = ROOT / "src" / "sextant_movers"
 SHA = re.compile(r"\b[0-9a-f]{40}\b")
 PATH = re.compile(r"`([^`]+)`")
-# Sextant itself (the dependency runs one way) and alpaca-py's trading client, which places orders:
-# alpacahq/alpaca-py@v0.44.0 `cc4cb3b7ba50ae250e621983c2779047fb16bb28`, `alpaca/trading/client.py`.
-FORBIDDEN = ("sextant", "alpaca.trading")
+# Sextant itself (the dependency runs one way) and alpaca-py's two order-placing clients, at
+# alpacahq/alpaca-py@v0.44.0 `cc4cb3b7ba50ae250e621983c2779047fb16bb28`: `TradingClient`
+# (`alpaca/trading/client.py:48`, `submit_order` :90) and `BrokerClient`
+# (`alpaca/broker/client.py:123`, `submit_order_for_account` :1632).
+FORBIDDEN = ("sextant", "alpaca.trading", "alpaca.broker")
 Row = dict[str, str]
 
 
