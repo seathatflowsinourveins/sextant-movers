@@ -1,9 +1,7 @@
 """The atomic file write: a reader sees the old file or the new one whole, never a part.
 
-The behaviour to keep is the reference's `write_atomic` (`sextant/execution/state.py:13-29` at
-06562bec0898a7203f4eaf69086ced83d2477e6b). Source: the CPython 3.13 standard library,
-https://docs.python.org/3.13/library/tempfile.html (`mkstemp`) and
-https://docs.python.org/3.13/library/os.html (`os.replace`, `os.fsync`), read 2026-11-11.
+The behaviour is the reference's `write_atomic` (`sextant/execution/state.py:13-29` at
+06562bec0898a7203f4eaf69086ced83d2477e6b), on the standard library (see `atomic.py`).
 """
 
 import json
@@ -11,16 +9,17 @@ import os
 from pathlib import Path
 
 import pytest
+
 from sextant_movers.atomic import write_atomic
 
 VALUE = {"b": [1, 2, 3], "a": {"nested": "text"}}
 
 
-def test_the_file_holds_the_value_as_sorted_json(tmp_path: Path) -> None:
+def test_the_file_holds_sorted_json_and_no_temporary_is_left(tmp_path: Path) -> None:
     path = tmp_path / "state" / "doc.json"
     write_atomic(path, VALUE)
     assert path.read_text() == json.dumps(VALUE, sort_keys=True)
-    assert json.loads(path.read_text()) == VALUE
+    assert [p.name for p in path.parent.iterdir()] == ["doc.json"]
 
 
 def test_an_existing_file_is_replaced_whole(tmp_path: Path) -> None:
@@ -28,13 +27,7 @@ def test_an_existing_file_is_replaced_whole(tmp_path: Path) -> None:
     path.write_text(json.dumps({"old": "x" * 4096}))
     write_atomic(path, {"new": 1})
     assert path.read_text() == '{"new": 1}'
-
-
-def test_no_temporary_file_is_left_after_success(tmp_path: Path) -> None:
-    path = tmp_path / "doc.json"
-    write_atomic(path, VALUE)
-    write_atomic(path, {"again": True})
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["doc.json"]
+    assert [p.name for p in tmp_path.iterdir()] == ["doc.json"]
 
 
 def test_a_failing_dump_leaves_the_old_file_and_no_temporary(tmp_path: Path) -> None:
