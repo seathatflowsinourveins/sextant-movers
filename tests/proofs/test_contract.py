@@ -33,7 +33,7 @@ def _designed() -> set[str]:
 
 
 def test_the_contract_exports_exactly_the_built_names() -> None:
-    assert contract.__all__ == sorted(BUILT)
+    assert sorted(contract.__all__) == sorted(BUILT)  # the linter orders `__all__` (RUF022)
 
 
 def test_each_exported_name_is_the_builders_own_object() -> None:
