@@ -5,7 +5,7 @@ What each workflow needs from the repository, by name only, and the order to tur
 ## Order
 
 1. **Repository settings** (Settings, General): allow squash merging, turn on "Allow auto-merge", and keep the default branch `main`. GitHub-hosted runners are free on public repositories (Sextant's ADR-0001); on a private repository the jobs bill Actions minutes.
-2. **Actions settings** (Settings, Actions, General): set the default `GITHUB_TOKEN` permissions to read; each job asks for what it needs. Require approval for workflows from outside collaborators, so a fork PR runs only after approval and never with secrets. If you restrict which actions may run, allow every `uses:` line listed below at its pinned commit **before** you merge the workflow that uses it; otherwise the whole workflow fails at startup.
+2. **Actions settings** (Settings, Actions, General): set the default `GITHUB_TOKEN` permissions to read; each job asks for what it needs. Require approval for workflows from outside collaborators, so a fork PR runs only after approval and never with secrets. If you restrict which actions may run, allow every `uses:` line listed below at its pinned commit, and each line under "Nested actions", **before** you merge the workflow that uses it; otherwise the whole workflow, or the one job that reaches a nested action, fails at startup.
 3. **First PR with `ci` alone.** Push the tree on a branch and open a PR. `ci` runs on `pull_request` with no secrets: `lint`, `tests`, `budgets` and `secrets` fan into one check named `ci`. Fix what fails there first.
 4. **Merge the tree to `main`.** The `gate` workflow is triggered by `workflow_run` and always runs the default branch's copy, so it does nothing until the workflows are on `main`. A PR can never change its own gate.
 5. **Review secrets** (Settings, Secrets and variables, Actions, Repository secrets): `DEEPSEEK_API_KEY` for the required dsh review. Add `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` only if you use the API quality reviewers (a dsh-authored PR, or the one extra review on a gate or risk path). Use low-limit keys you can rotate.
@@ -25,6 +25,15 @@ What each workflow needs from the repository, by name only, and the order to tur
 | `dependabot.yml` | Dependabot | none | Dependabot version updates on | none |
 
 Environments (`.github/rulesets/environments.json`): `review` and `hosted-workers`, each limited to `main`. The applier creates them empty; their secrets are the owner's to add.
+
+### Nested actions
+
+A composite action's own `uses:` lines need their own entries in the allowed list. GitHub's settings page gives the pattern syntax and does not say this (read 2026-11-11); measured here on 2026-11-11: with only the parent allowed, the Codex review job ended at "Set up job" and the required `review` status failed with no finding. Read the live list with `gh api repos/<owner>/<name>/actions/permissions/selected-actions`. Before a bump of either action below, re-read its `action.yml` at the new commit, allow what it names, then update the row; `tests/repo/test_setup_actions.py` holds the row to the gate's pin.
+
+| Action the gate runs | Where it names another | Pattern to allow |
+|---|---|---|
+| `openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675` | `action.yml:145` | `actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f` |
+| `anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6` | `action.yml:195` | `oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6` |
 
 ## Local tools
 
