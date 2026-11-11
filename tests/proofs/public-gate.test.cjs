@@ -22,9 +22,8 @@ test('dsh authors get Codex by default and Claude only when selected', () => {
 });
 
 test('owner-named risk prefixes select one extra other-family review; Codex selects it', () => {
-  for (const prefix of ['src/sextant/execution/', 'src/sextant/exits/', 'src/sextant/paper/',
-    'src/sextant/risk/', 'src/sextant/alpaca/', 'lanes/paper/', 'lanes/live/', 'deploy/live/',
-    'config/dsh/review-cmd/', '.github/']) {
+  for (const prefix of ['src/sextant_movers/tradingview/', 'src/sextant_movers/lease',
+    'src/sextant_movers/lease/', 'deploy/movers/', 'config/dsh/review-cmd/', '.github/']) {
     for (const field of ['filename', 'previous_filename']) {
       const files = [{filename: 'docs/moved.txt', [field]: `${prefix}example.py`}];
       assert.equal(gate.route('Agent-Family codex', files).quality, '', `${prefix}:${field}`);
@@ -32,7 +31,11 @@ test('owner-named risk prefixes select one extra other-family review; Codex sele
       assert.equal(gate.route('Agent-Family dsh', files).quality, 'codex', `${prefix}:${field}`);
     }
   }
-  assert.equal(gate.route('Agent-Family codex', [{filename: 'src/sextant/riskier/example.py'}]).quality, '');
+  for (const ordinary of ['src/sextant_movers/ranking/example.py', 'src/sextant_movers/contract.py',
+    'src/sextant_movers/tradingviews/example.py', 'deploy/moversx/example.service',
+    'src/sextant/execution/example.py', 'lanes/paper/example.py', 'deploy/live/example.service']) {
+    assert.equal(gate.route('Agent-Family claude', [{filename: ordinary}]).quality, '', ordinary);
+  }
   assert.equal(gate.route('Agent-Family claude', [{filename: 'dangerfile.js'}]).quality, 'codex');
   assert.equal(gate.route('Agent-Family codex\nReview-Family claude', [{filename: '.github/workflows/ci.yml'}]).quality, 'claude');
 });
