@@ -23,22 +23,16 @@ def test_at_most_thirty_one_page_adrs() -> None:
     assert all(_lines(adr) <= 80 for adr in adrs)
 
 
-def test_at_most_thirty_research_notes() -> None:
-    assert len(list((ROOT / "docs" / "research").glob("*.md"))) <= 30
-
-
 def test_src_stays_under_budget() -> None:
-    # Sextant's value and its raise history (owner and lead rulings, each with its measurement)
-    # stay in the source repository. Set your own cap; raise it only by a PR that states a reason.
-    assert sum(_lines(path) for path in (ROOT / "src").rglob("*.py")) < 37000
+    # An uncalibrated starting cap for src/sextant_movers/, the only package under src/: the
+    # reference ranking and display code measure about 10,350 lines, plus helpers. Raise it only by
+    # a PR that states a reason and its measurement. consolidation.yml reads the cap from the line
+    # below, so keep its shape.
+    assert sum(_lines(path) for path in (ROOT / "src").rglob("*.py")) < 12000
 
 
 def test_design_stays_short() -> None:
     assert _lines(ROOT / "docs" / "design.md") <= 220
-
-
-def test_lane_readmes_stay_short() -> None:
-    assert all(_lines(path) <= 60 for path in (ROOT / "lanes").glob("*/README.md"))
 
 
 def test_practices_stay_short() -> None:

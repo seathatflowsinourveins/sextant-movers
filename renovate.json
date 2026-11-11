@@ -3,17 +3,13 @@
   "enabledManagers": [
     "npm",
     "pep621",
-    "dockerfile",
     "github-actions",
-    "devcontainer",
     "custom.regex"
   ],
   "ignorePaths": [
     "**/node_modules/**",
     "**/bower_components/**",
     "**/.venv/**",
-    ".superpowers/**",
-    "reports/**",
     ".github/workflows/*.lock.yml",
     ".claude/skills/**",
     ".claude/lsp/**"
