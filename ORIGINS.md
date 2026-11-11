@@ -1,5 +1,7 @@
 # Origins
 
+The table below describes the seed commit: its State column says how each file stood when it was copied. Files were adapted to this repository afterwards; git history shows each change.
+
 Every file in this tree and where it comes from. Source: Sextant, `main` at `3b59f140036a0e5804b6ed0b50ade30919965079` (2026-11-11). **verbatim** means byte-identical to that blob; **generalised** means copied and then changed only as the note says; **new** files describe what is here.
 
 | File | Origin | Blob at that commit | State | Note |

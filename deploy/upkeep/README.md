@@ -10,7 +10,7 @@ on the single tracker issue `Hosted upkeep receipts`.
 
 | Cron (UTC) | Brief | What it does |
 | --- | --- | --- |
-| `0 9 * * *` | `upkeep-models` | ADR-0030 model-freshness detector |
+| `0 9 * * *` | `upkeep-models` | model-freshness detector (AGENTS.md Rule 2) |
 | `17 5 * * *` | `upkeep-dependencies` | Renovate local-platform evidence |
 | `25 17 * * 1` | `upkeep-panel` | weekly upstream upkeep panel |
 
@@ -37,10 +37,8 @@ hosted job installs the pinned release with `--ignore-scripts`:
   and `lib/config/options/index.ts`, read 2026-11-08
 
 `renovate.json` keeps one global `minimumReleaseAge` of 14 days, equal to
-`deploy/wsl/lane-runtimes/pins.json`'s `release_cooldown_days`, and disables
-major updates plus `nautilus-trader` and `alpaca-py`. The ported config's third
-package rule matched `deploy/wsl/lane-runtimes/package.json`, which #288 retired;
-it is dropped rather than carried as a rule that matches nothing.
+Dependabot's cooldown, and disables major updates plus `nautilus-trader` and
+`alpaca-py`.
 
 The report and its version record are mode 600 in a mode 700 scratch directory
 under the runner's temporary directory. They are read once and deleted; the
@@ -50,6 +48,5 @@ receipt carries the numbers that mattered.
 
 No scheduled run has fired yet: the cron triggers are static proof until the
 first receipt exists, and a run of this workflow is what turns them into
-evidence. The job's pin installs, brief resolution and PR path are proven by
-`tests/proofs/test_hosted_upkeep.py`; they are config and fixture evidence, not
-a receipt.
+evidence. Sextant proves the job's pin installs, brief resolution and PR path
+with a proof that is not included in this tree.

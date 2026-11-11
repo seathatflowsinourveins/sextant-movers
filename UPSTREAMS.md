@@ -1,12 +1,12 @@
 # Upstreams
 
-The pinned upstream repositories Sextant's workers read, as one table. `scripts/clone-upstreams.sh` reads this table and reproduces the folder: a shallow clone of each public repository at its tag, then a check that the checked-out commit equals the full commit below. Rows marked `full` are cloned with full history, so `git log` and `git blame` can answer why a line exists. Read the copies only: never edit or commit in them, cite `file:line` at the pin, and read another version with `git -C <dir> show <tag>:<path>` instead of moving a checkout.
+The pinned upstream repositories this repository's workers read, as one table. `scripts/clone-upstreams.sh` reads this table and reproduces the folder: a shallow clone of each public repository at its tag, then a check that the checked-out commit equals the full commit below. Rows marked `full` are cloned with full history, so `git log` and `git blame` can answer why a line exists. Read the copies only: never edit or commit in them, cite `file:line` at the pin, and read another version with `git -C <dir> show <tag>:<path>` instead of moving a checkout.
 
 Source: Sextant's shared upstream folder as the lead verified it on 2026-11-11 (its README and the three clone scripts behind it); each commit below was read from that folder with `git rev-parse HEAD`. Which kind may decide what is set out in [SOURCE-HIERARCHY.md](SOURCE-HIERARCHY.md).
 
 ## Official: the source of truth
 
-The first two are Sextant's trading engine and broker SDK; replace them with your own project's official upstreams. The rest serve the gate, the review path and the hosts the harness runs on, and carry over as they are.
+The first five are this repository's own: the engine, the broker SDK, the MCP Python SDK, the exchange calendars and Lightweight Charts, at Sextant's pins. The rest serve the gate, the review path and the hosts the harness runs on, and carry over as they are.
 
 | Directory | Repository | Tag | Commit | History |
 |---|---|---|---|---|
@@ -14,9 +14,7 @@ The first two are Sextant's trading engine and broker SDK; replace them with you
 | alpaca-py | alpacahq/alpaca-py | v0.44.0 | cc4cb3b7ba50ae250e621983c2779047fb16bb28 | full |
 | mcp-python-sdk | modelcontextprotocol/python-sdk | v2.3.0 | 2118f14f8a19bc158d8a1cf90af58d85d187f849 | shallow |
 | exchange_calendars | gerrymanoim/exchange_calendars | 4.13.2 | dbe38b1f6887434bbdd1a7d2df6ff8f1742a048a | shallow |
-| requests | psf/requests | v2.34.2 | 6e83187b8feb273ed4c6cdab5efd8d54901dfab3 | shallow |
 | lightweight-charts | tradingview/lightweight-charts | v5.2.1 | b2ce010e4ad59f6556c9ed60e2b2b30feccdd2d1 | shallow |
-| river | online-ml/river | 0.26.1 | 64285b9dd6c606804753235fe992bcf25b9856ee | shallow |
 | danger-js | danger/danger-js | 14.1.0 | 72540533c4f99bad772ba303be0eb4af6eddbdc4 | shallow |
 | codex | openai/codex | rust-v0.167.0 | 086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a | shallow |
 | codex-action | openai/codex-action | v1.13 | bdf19a4a223ec2549a3e2274a0cf61556bc07675 | shallow |
