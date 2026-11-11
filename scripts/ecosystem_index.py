@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build llms.txt, the one-page entry point into Sextant's written record.
+"""Build llms.txt, the one-page entry point into this repository's written record.
 
 Every ADR, lane README, handbook page and research note is listed with a short
 description taken from its own first paragraph. The file is generated, so it cannot
@@ -69,7 +69,7 @@ def _first_paragraph(text: str) -> str:
             continue
         paragraph.append(stripped)
     if not paragraph:
-        return "Sextant documentation."
+        return "sextant-movers documentation."
     joined = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", " ".join(paragraph))
     joined = re.sub(r"\s+", " ", joined).strip()
     return textwrap.shorten(joined, width=DESCRIPTION_WIDTH, placeholder="...")
@@ -104,7 +104,7 @@ def render() -> str:
     ]
     core_entries = [_entry(path, title) for path, title in core if path.is_file()]
     lines = [
-        "# Sextant ecosystem index",
+        "# sextant-movers ecosystem index",
         "",
         "The fastest path from a question to the page that answers it. Generated from the",
         "tree by `scripts/ecosystem_index.py`; run `just session-start` to check it.",
