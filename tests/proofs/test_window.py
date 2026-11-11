@@ -21,9 +21,9 @@ from typing import Any
 import nautilus_trader.model as model
 import pytest
 from nautilus_trader.model import AggressorSide, InstrumentId, Price, Quantity, TradeId, TradeTick
-from sextant_movers.ranking.window import NS, ZERO, Bucket, TradeWindow
 
 from sextant_movers.ranking import window as win
+from sextant_movers.ranking.window import NS, ZERO, Bucket, TradeWindow
 
 REFERENCE_BLOB = "4180e5aa8466eb4c548488218d3826fac10fa0ef"  # git blob of the reference file
 # Measured by the `local` proof from the reference in its child interpreter, then held here.
