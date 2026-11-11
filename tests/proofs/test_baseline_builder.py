@@ -40,7 +40,7 @@ from sextant_movers.ranking.baseline import (
 D = Decimal
 ET = ZoneInfo("America/New_York")
 REFERENCE_BLOB = "3da751ea1d2650819ac467abfb53eb8bd8b05dab"  # git blob of the reference file
-GOOD_DIGEST = "pinned after the parity run"
+GOOD_DIGEST = "1c11dd3852f192cc59b3e22e92b189c4d72e6d9c1c1e5d1fc820571184b34e21"
 AS_OF = date(2026, 10, 27)
 SESSIONS = ("10-22", "10-23", "10-26")
 FLOAT: Any = 1.5
