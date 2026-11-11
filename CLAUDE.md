@@ -4,7 +4,7 @@ You are the lead. Use Claude Code's native features first: skills, subagents, wo
 
 Between unrelated tasks, send a bare `/clear`; it costs nothing and stops one task's history from being re-read by the next.
 
-[Sextant-specific, replace with your own focus line: Sextant's says to start with its clean-WSL instructions and its design document, and names its trading focus.] Measure each claim.
+Focus: the movers ranking and its TradingView display, display only, built on the pinned upstreams in `docs/manifest.md`; start with [the design](docs/design.md). Measure each claim.
 
 A PR lands through squash auto-merge only when ci, source and review pass. CI runs on hosted pull_request jobs; the default-branch workflow_run gate supplies API-only Danger and dsh-github review. API-key reviewers run only for dsh authors (Codex by default, Claude when selected) or as one extra quality review on risk or gate paths, with no API reviewer for a Codex author unless it selects Claude. Follow the exact-head witness and bounded landing rule in shared/review-rules.md. Local Codex uses the subscription pool, never OPENAI_API_KEY.
 
