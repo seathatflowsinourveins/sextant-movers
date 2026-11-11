@@ -1,0 +1,36 @@
+{
+  "readDate": "2026-11-11",
+  "plugins": {
+    "superpowers@superpowers-dev": {
+      "repo": "obra/superpowers",
+      "ref": "v7.0.2",
+      "sha": "22f0b463e7a5e579904dd6211a520321035526f7"
+    },
+    "compound-engineering@compound-engineering-plugin": {
+      "repo": "EveryInc/compound-engineering-plugin",
+      "ref": "compound-engineering-v3.36.0",
+      "sha": "7dc50943bbf959dbe6a93a175e41e5fff8395e00"
+    },
+    "claude-hud@claude-hud": {
+      "repo": "jarrodwatts/claude-hud",
+      "ref": "v0.15.0",
+      "sha": "b86e1c3e5255880578de4b7cc87dc383228c2a18"
+    }
+  },
+  "skills": {
+    "files": {}
+  },
+  "lsp": {
+    "repo": "anthropics/claude-plugins-official",
+    "sha": "cb421c81df4274fd28fd1ead817bc6ffea723fed",
+    "files": {
+      "pyright-lsp/.claude-plugin/plugin.json": "2cf083ce0ec6aa27c25ba7dd3b1cc37868f899f1bd77a9431949703e888c4c1d",
+      "pyright-lsp/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "pyright-lsp/README.md": "06831f5f4397506f295857d4de98bd0ceeeb23b2546168c3c0029c5e03782cf0",
+      "typescript-lsp/.claude-plugin/plugin.json": "9dc64ac773c9a25c6fd856b856568db58033540073cbe06c743eca501d27005c",
+      "typescript-lsp/LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "typescript-lsp/README.md": "adeb3592417e4b8fa6d05a3cb199b41fb38b80f590167bfef2b8688d00644685"
+    }
+  },
+  "mcp": {}
+}
