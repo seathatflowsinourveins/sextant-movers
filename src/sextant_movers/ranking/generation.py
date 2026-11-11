@@ -14,7 +14,12 @@ type and range checks, but it cannot show duplicate keys, number spelling beyond
 trailing text, key order, whitespace or escapes. On both paths a Decimal string the constructor
 accepts in a non-canonical spelling is re-spelled by `str()`, as the reference does.
 
-Part 3d adds the engine view, its Arrow callbacks and the registration; importing registers nothing.
+Engine lines read at that pin: registration takes the schema from `arrow_schema_py()` and checks
+`type_name_static`, `from_json` and `decode_record_batch_py` (`mod.rs:648-720`); the engine calls
+`encode_record_batch_py(items)` on the first item (`:485-535`) and the class's
+`decode_record_batch_py(metadata, batch)` (`:548-603`); a catalog write refuses `ts_event` or
+`ts_init` other than timestamp("ns", tz="UTC") (`crates/persistence/src/common/custom.rs:198-224`),
+so only the engine view casts those two columns. Importing this module registers nothing.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 import pyarrow as pa
+from nautilus_trader.model import DataType, register_custom_data_class
 
 SCHEMA_VERSION = 2
 TYPE_NAME = "RankingGeneration"
@@ -248,6 +254,19 @@ class RankingGeneration:
     @classmethod
     def type_name_static(cls) -> str:
         return TYPE_NAME
+
+    @classmethod
+    def arrow_schema_py(cls) -> pa.Schema:
+        return _ENGINE_ARROW_SCHEMA
+
+    def encode_record_batch_py(self, items: Sequence[RankingGeneration]) -> pa.RecordBatch:
+        return encode_arrow(items).cast(_ENGINE_ARROW_SCHEMA)
+
+    @classmethod
+    def decode_record_batch_py(
+        cls, metadata: Mapping[str, str], batch: pa.RecordBatch
+    ) -> list[RankingGeneration]:
+        return decode_arrow(_from_engine_batch(metadata, batch))
 
 
 def _to_wire(value: Any) -> Any:
@@ -481,6 +500,18 @@ ARROW_SCHEMA = pa.schema(
     metadata={b"type": TYPE_NAME.encode(), b"schema_version": str(SCHEMA_VERSION).encode()},
 )
 
+# The engine's catalog needs `ts_event` and `ts_init` as timestamp("ns", tz="UTC"); this view
+# casts only those two columns from and to the int64 nanoseconds above.
+_ENGINE_ARROW_SCHEMA = pa.schema(
+    [
+        pa.field(field.name, pa.timestamp("ns", tz="UTC"), nullable=False)
+        if field.name in ("ts_event", "ts_init")
+        else field
+        for field in ARROW_SCHEMA
+    ],
+    metadata=ARROW_SCHEMA.metadata,
+)
+
 
 def encode_arrow(records: Sequence[RankingGeneration]) -> pa.RecordBatch:
     rows = []
@@ -495,12 +526,15 @@ def encode_arrow(records: Sequence[RankingGeneration]) -> pa.RecordBatch:
 
 def _load_reasons(holder: Any) -> None:
     if not isinstance(holder, dict) or not isinstance(holder.get("reasons"), str):
-        raise ValueError("reasons must be canonical JSON text")
+        raise ValueError("reasons must be JSON text")
     holder["reasons"] = _strict_loads(holder["reasons"])
 
 
 def decode_arrow(batch: pa.RecordBatch) -> list[RankingGeneration]:
-    """Arrow does not enforce a non-null field's data, so a null is refused here."""
+    """Arrow keeps a null in a not-null field. A top-level null is refused here; the strict reader
+    refuses one nested in a struct or a list, as a child's nulls are not its column's. Reasons
+    text is read strictly (no duplicate key or non-integer number) and must have the reasons
+    shape; it is not required to be canonically spelled, as the reference does not require it."""
     if not batch.schema.equals(ARROW_SCHEMA, check_metadata=True):
         raise ValueError("unknown ranking Arrow schema")
     if any(column.null_count for column in batch.columns):
@@ -512,3 +546,25 @@ def decode_arrow(batch: pa.RecordBatch) -> list[RankingGeneration]:
             _load_reasons(item)
         records.append(RankingGeneration.from_json(row))
     return records
+
+
+def _from_engine_batch(metadata: Mapping[str, str], batch: pa.RecordBatch) -> pa.RecordBatch:
+    """The engine view as encoded, or as the rc8 catalog query hands it back: no `data_type`
+    column, `type_name` in the metadata, top-level strings as string_view. Nothing wider."""
+    if metadata.get("type_name") != TYPE_NAME:
+        raise ValueError("unknown custom data type")
+    normal = pa.schema(
+        [
+            field.with_type(pa.string()) if pa.types.is_string_view(field.type) else field
+            for field in batch.schema
+        ]
+    )
+    if not normal.equals(_ENGINE_ARROW_SCHEMA, check_metadata=False):
+        raise ValueError("unknown engine Arrow schema")
+    return batch.cast(_ENGINE_ARROW_SCHEMA).cast(ARROW_SCHEMA)
+
+
+def register_ranking_generation() -> DataType:
+    """The one explicit registration; importing this module registers nothing."""
+    register_custom_data_class(RankingGeneration)
+    return DataType(TYPE_NAME)
