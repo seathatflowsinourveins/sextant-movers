@@ -189,6 +189,18 @@ def test_install_adds_at_user_scope_and_installs_at_local_scope(tmp_path: Path) 
     _git(tmp_path, "check-ignore", "-q", ".claude/settings.local.json", cwd=main)
 
 
+def test_install_stops_before_any_add_when_git_does_not_ignore_the_local_file(
+    tmp_path: Path,
+) -> None:
+    main, _ = _repo(tmp_path)
+    (main / ".gitignore").write_text("__pycache__/\n")
+    _git(tmp_path, "commit", "-q", "-am", "no ignore", cwd=main)
+    result, calls = _run(tmp_path, main, "--install")
+    assert result.returncode == 1
+    assert ".claude/settings.local.json" in _one_line(result.stderr)
+    assert [call["argv"] for call in calls] == [["plugin", "marketplace", "list", "--json"]]
+
+
 def test_install_started_in_a_linked_worktree_runs_from_the_main_checkout(
     tmp_path: Path,
 ) -> None:
