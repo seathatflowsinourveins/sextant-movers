@@ -3,33 +3,26 @@
 Synthetic values only: invented ZZ symbols, made-up registry rows, no fixture file, no network and
 no socket; the registry, baseline, segment and ticks come from `test_engine.py`'s helpers. The
 reference is `src/sextant/ranking/publisher.py:51-134` at
-`06562bec0898a7203f4eaf69086ced83d2477e6b`; this process never imports it, and the `local` proof
-runs it in a child interpreter. `TYPES` and `EDGES` are the values the reference hardcodes, passed
-here as test input, never shipped.
+`06562bec0898a7203f4eaf69086ced83d2477e6b`; this process never imports it, and the seeded `local`
+parity proof against it is the next change. `TYPES` and `EDGES` are the values the reference
+hardcodes, passed here as test input, never shipped.
 """
 
 import ast
-import hashlib
-import inspect
 import json
-import os
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-import nautilus_trader.model as nt
 import pytest
 from test_engine import NS, POST, SCOPE, START, quote, registry, step, table, tick
 from test_heartbeat import GOOD
 
-from sextant_movers.ranking import baseline as bl
 from sextant_movers.ranking import generation as gen
 from sextant_movers.ranking import publisher
-from sextant_movers.ranking import registry as rg
 from sextant_movers.ranking.engine import MoverState, ReferencePrices
 from sextant_movers.ranking.generation import Coverage, CoverageState
 from sextant_movers.ranking.publisher import AssetState, RankingPublisher, universe_digest
@@ -352,232 +345,3 @@ def test_the_module_holds_none_of_the_names_left_out_and_no_publish() -> None:
     assert [name for name in LEFT_OUT if name in code] == []
     texts = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)}
     assert not texts & {"common", "adr"} and not hasattr(RankingPublisher, "publish")
-
-
-def intake_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
-    """Seeded eligibility, constructor and intake answers; the parity child runs this too."""
-    import random
-    from datetime import date
-    from decimal import Decimal as D
-
-    rng = random.Random(20261112)  # noqa: S311 - a seeded fixture, not a secret
-    ns, day, pick = 1_000_000_000, date(2030, 11, 29), lambda *xs: rng.choice(xs)
-    start = (1_922_140_800 + 9 * 3600) * ns
-    pre = m["Segment"]("PRE", day, start, start + 19_800 * ns, "fixture")
-    night = m["Segment"]("OVERNIGHT", day, start - 5 * 3600 * ns, start, "fixture")
-    values = {"mover_min_move": "0.05", "mover_min_trades_accel": "2", "move_1m_window_s": "60"}
-    values |= {"mover_min_dvol_ratio": "0.5", "move_5m_window_s": "300"}
-    values |= {"trades_accel_window_s": "60"}
-    rows = [
-        m["RegistryRow"](n, u, k(values.get(n, "5")), "zz", "UNCALIBRATED", day)
-        for n, k, u in m["rows"]
-    ]
-    reg, pool = m["Registry"](tuple(rows)), ("ZZPBA", "ZZPBB", "ZZPBC", "ZZPBD")
-    curve = ((0, D(0), D(0)), (600, D(500), D(100)))
-    samples = [
-        m["BaselineSample"](s, g, "2030-11-27", o, v, c)
-        for s in pool
-        for g in ("PRE", "OVERNIGHT")
-        for o, v, c in curve
-    ]
-    tables = {
-        f: m["BaselineTable"](tuple(samples), "zz", start - 6 * 3600 * ns, f)
-        for f in ("sip", "boats")
-    }
-
-    def attempt(call: Any, *args: Any, **kw: Any) -> Any:
-        try:
-            return call(*args, **kw)
-        except Exception as exc:
-            return [type(exc).__name__, str(exc)]
-
-    def shown(v: Any) -> Any:
-        if isinstance(v, D):
-            return str(v)
-        return [shown(x) for x in v] if isinstance(v, tuple | list) else v
-
-    def row(r: Any) -> Any:
-        if r is None:
-            return None
-        names = ("symbol", "known_at", "score", "rank", "move", "move_1m", "move_5m")
-        names += ("dvol_ratio", "trades_accel", "gates_passed", "params_hash")
-        seen = {k: shown(v) for k, v in sorted(r.observations.items())}
-        return {f: shown(getattr(r, f)) for f in names} | {"observations": seen}
-
-    def started(**kw: Any) -> Any:
-        p = m["make"](**kw)
-        seg, cov = (p.segment.name, p.segment.start_ns), (p.coverage.state, p.coverage.complete)
-        fresh = [[k, v == m["MoverState"]()] for k, v in p.states.items()]
-        head = [p.epoch, p.feed, seg, p.registry.params_hash, p.universe, p.universe_source]
-        tail = [p.baseline.feed, p.heartbeat, p.universe_hash, fresh, len(p.references)]
-        marks = [len(p.assets), cov, p.published_at, p.sequence, p.last_event, p.input_cutoff]
-        return [*head, *tail, *marks]
-
-    def asset() -> Any:
-        times = pick(-1, 0, 5, 5, 10, 11), pick(0, 5, 10, 11, 20, 20, 20)
-        kind = pick("common", "adr", "common", "adr", "etf", "", "Common", ["zz"])
-        halted = pick(True, *(False,) * 5, None, 0)
-        return m["AssetState"](*times, halted, kind, pick("", *("zz",) * 7))
-
-    eligible = []
-    for _ in range(240):
-        now = pick(0, 5, 9, 10, 11, 19, 20, True, False, -1)
-        eligible.append([now, attempt(m["eligible"], asset(), now)])
-    constructed, odd = [], (("ZZPBA",) * 2, ["ZZPBB", "ZZPBA"], ("ZZPBA", 7), (["ZZ"],), (7,), ())
-    for _ in range(90):
-        names = tuple(rng.sample(pool, rng.randint(1, 4))) if rng.random() < 0.7 else pick(*odd)
-        feed = pick("sip", "sip", "boats", "iex")
-        kw = {"epoch": pick(*("zz",) * 6, ""), "feed": feed, "registry": reg, "universe": names}
-        kw["segment"] = (
-            pick(night, pre) if rng.random() < 0.2 else night if feed == "boats" else pre
-        )
-        base = pick("sip", "boats") if rng.random() < 0.2 else "boats" if feed == "boats" else "sip"
-        kw |= {"universe_source": pick(*("zz",) * 6, ""), "baseline": tables[base]}
-        constructed.append(attempt(started, heartbeat=pick(None, "zz"), **kw))
-    runs, prices = [], ("0.00", *("1.90", "2.00", "2.10", "2.40", "2.60") * 2)
-    for i in range(36):
-        names, feed = tuple(rng.sample(pool[:3], rng.randint(1, 3))), pick("sip", "boats")
-        seg = pre if feed == "sip" else night
-        kw = {"epoch": f"zz-{i}", "feed": feed, "segment": seg, "registry": reg, "universe": names}
-        p = m["make"](universe_source="zz", baseline=tables[feed], **kw)
-        t, steps = seg.start_ns + pick(0, rng.randint(1, 30) * ns), []
-        for name in names if rng.random() < 0.8 else ():
-            refs = m["ReferencePrices"](pick(None, D(2), D(2), D("1.5")), seg.start_ns - ns, "zz")
-            p.set_symbol(name, references=refs, asset=None)
-        for _ in range(rng.randint(14, 30)):
-            r, name = rng.random(), pick(*names, *names, *names, "ZZPBD")
-            if r < 0.1:
-                refs = m["ReferencePrices"](pick(None, D(2), D("1.5")), seg.start_ns - ns, "zz")
-                outcome = attempt(p.set_symbol, name, references=refs, asset=pick(None, asset()))
-            elif r < 0.17:
-                cover = m["Coverage"](pick(*m["CoverageState"]), rng.random() < 0.5)
-                outcome = attempt(p.set_coverage, cover)
-            else:
-                t += pick(0, 1, ns, 5 * ns, 30 * ns, 61 * ns)
-                when = t - rng.randint(1, 20) * ns if rng.random() < 0.08 else t
-                when = seg.end_ns if rng.random() < 0.03 else when
-                iid, px = nt.InstrumentId.from_str(name + ".SIM"), nt.Price.from_str(pick(*prices))
-                size, side = nt.Quantity.from_int(rng.randint(1, 50)), nt.AggressorSide.BUY
-                trade = nt.TradeTick(iid, px, size, side, nt.TradeId("t"), when, when + pick(0, 1))
-                one, at = nt.Quantity.from_int(1), max(seg.start_ns, when - pick(0, ns))
-                bid, ask = nt.Price.from_str("1.99"), nt.Price.from_str("2.01")
-                quote = nt.QuoteTick(iid, bid, ask, one, one, at, at)
-                facts = pick({}, {}, {}, {}, {"known_at": when + pick(0, 5 * ns)}, {"quote": quote})
-                odd = {"price_eligible": False}, {"volume_eligible": False}, {"quote": "zz"}
-                facts = pick(*odd, {"zz": 1}, facts, facts, facts, facts)
-                outcome = attempt(p.on_trade, trade, **facts)
-            held, cover = p.states.get(name), [p.coverage.state.value, p.coverage.complete]
-            steps.append([outcome, cover, p.last_event, p.input_cutoff, row(held and held.latest)])
-        runs.append(steps)
-    return {"eligible": eligible, "constructed": constructed, "runs": runs, "sent": m["sent"]()}
-
-
-def canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-SENT: list[Send] = []
-
-
-def made(**kw: Any) -> RankingPublisher:
-    SENT.append(Send())
-    return RankingPublisher(send=SENT[-1], method_version="zz-method", **FIXED, **kw)
-
-
-SIDE = {
-    "Registry": rg.Registry,
-    "RegistryRow": rg.RegistryRow,
-    "rows": [(n, k, u) for n, (k, u) in rg.ROWS.items()],
-}
-SIDE |= {
-    "BaselineSample": bl.BaselineSample,
-    "BaselineTable": bl.BaselineTable,
-    "Segment": bl.Segment,
-}
-SIDE |= {"ReferencePrices": ReferencePrices, "MoverState": MoverState, "AssetState": AssetState}
-SIDE |= {"Coverage": Coverage, "CoverageState": CoverageState, "make": made}
-SIDE |= {
-    "eligible": lambda a, now: a.eligible(now, security_types=TYPES),
-    "sent": lambda: sum(len(s.calls) for s in SENT),
-}
-OURS = intake_answers(SIDE, nt)
-ANSWERS = "0a9ce2becd912de67667d8176c0840b59512d207beb80315538cd2174b4c3be2"
-
-
-def test_this_sides_answers_are_pinned() -> None:
-    steps = [one for run in OURS["runs"] for one in run]
-    raised = {one[0][0] for one in steps if one[0] is not None}
-    assert len(OURS["eligible"]) >= 200 and len(OURS["constructed"]) >= 60
-    assert len(OURS["runs"]) >= 30 and len(steps) >= 600 and OURS["sent"] == 0
-    assert {"ValueError", "KeyError", "TypeError", "AttributeError"} <= raised
-    assert raised & {"DivisionByZero", "InvalidOperation", "ZeroDivisionError"}
-    assert sum(one[4] is not None for one in steps) > 100
-    accepted = sum(len(c) > 2 for c in OURS["constructed"])
-    assert 0 < accepted < len(OURS["constructed"])
-    assert {e[1] is True for e in OURS["eligible"]} == {True, False}
-    for run in OURS["runs"]:  # an AttributeError leaves the coverage the step before held
-        for prior, one in pairwise(run):
-            assert one[1] == prior[1] or one[0] is None or one[0][0] != "AttributeError"
-    assert hashlib.sha256(canonical(OURS).encode()).hexdigest() == ANSWERS
-
-
-PARITY = """
-import hashlib, json, os, sys
-SRC = os.environ["MOVERS_REFERENCE_SRC"]
-PATH = os.path.join(SRC, "sextant", "ranking", "publisher.py")
-with open(PATH, "rb") as handle:
-    blob = handle.read()
-BLOB = "498ac186d643a137b32f6ff84f9ca76c657fb0ee"
-assert hashlib.sha1(b"blob %d\\0" % len(blob) + blob).hexdigest() == BLOB
-sys.path.insert(0, SRC)
-import nautilus_trader
-import nautilus_trader.model as nt
-from sextant.ranking import baseline as bl, engine as en, generation as g, publisher as pb
-from sextant.ranking import registry as rg
-assert os.path.samefile(pb.__file__, PATH)
-
-class Bus:
-    def __init__(self):
-        self.calls = 0
-    def publish(self, *args, **kw):
-        self.calls += 1
-
-buses = []
-def make(**kw):
-    buses.append(Bus())
-    return pb.RankingPublisher(bus=buses[-1], **kw)
-
-m = {"Registry": rg.Registry, "RegistryRow": rg.RegistryRow,
-     "rows": [(n, k, u) for n, (k, u) in rg.ROWS.items()], "Segment": en.Segment,
-     "BaselineSample": bl.BaselineSample, "BaselineTable": bl.BaselineTable,
-     "ReferencePrices": en.ReferencePrices, "MoverState": en.MoverState,
-     "AssetState": pb.AssetState,
-     "Coverage": g.Coverage, "CoverageState": g.CoverageState, "make": make,
-     "eligible": lambda a, now: a.eligible(now), "sent": lambda: sum(b.calls for b in buses)}
-print("PARITY " + json.dumps({
-    "versions": [list(sys.version_info[:3]), nautilus_trader.__version__],
-    "answers": intake_answers(m, nt),
-}))
-"""
-PARITY_NEEDS = "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof"
-
-
-@pytest.mark.local
-def test_intake_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip(PARITY_NEEDS)
-    script = "from typing import Any\n" + inspect.getsource(intake_answers) + PARITY
-    env = {"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)}
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", script], env=env, capture_output=True, text=True, timeout=600
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
-    here = [list(sys.version_info[:3]), sys.modules["nautilus_trader"].__version__]
-    steps = sum(len(run) for run in theirs["answers"]["runs"])
-    print(f"\npython, engine: here {here}, reference {theirs['versions']}")
-    counts = [len(theirs["answers"][k]) for k in ("eligible", "constructed", "runs")]
-    print(f"parity: eligible, constructed, runs {counts}, steps {steps}")
-    assert canonical(theirs["answers"]) == canonical(OURS)
