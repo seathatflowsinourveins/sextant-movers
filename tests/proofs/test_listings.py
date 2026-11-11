@@ -25,6 +25,8 @@ from typing import Any
 from urllib.error import HTTPError
 
 import pytest
+
+from sextant_movers.ranking import listings as lst
 from sextant_movers.ranking.listings import (
     BASE,
     HEADERS,
@@ -40,8 +42,6 @@ from sextant_movers.ranking.listings import (
     validate,
 )
 
-from sextant_movers.ranking import listings as lst
-
 NASDAQ, OTHER = "nasdaqlisted.txt", "otherlisted.txt"
 STAMP = "0102202609:30"
 NOW = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
@@ -55,7 +55,8 @@ REFERENCE_BLOBS = {  # git blob ids of the reference files at the pinned commit
     "listings.py": "60643fcf892a4530f73db8b4186692a95b32bce4",
     "bars.py": "8ae03acec28cabae0425cf6af1bce38b08910e60",
 }
-ANSWERS_DIGEST = "0" * 64  # SHA-256 of this side's canonical parity answers
+# SHA-256 of this side's canonical parity answers; the `local` proof shows the reference gives them.
+ANSWERS_DIGEST = "ad0f39d8d0c87003788df0c9073983a0c5deda8e26fd3ed4c959e19a2ffaab76"
 
 
 def text(name: str, *rows: str, end: str = "\r\n", trailer: str | None = None) -> str:
@@ -237,7 +238,7 @@ def test_both_good_files_are_staged_with_the_receipt(tmp_path: Path) -> None:
     assert sorted(p.name for p in folder.iterdir()) == sorted([*HEADERS, RECEIPT])
     assert all((folder / name).read_bytes() == GOOD_FILES[name] for name in HEADERS)
     assert (folder / RECEIPT).read_text() == json.dumps(receipt, sort_keys=True)
-    assert stage.__kwdefaults__["get"] is fetch
+    assert (stage.__kwdefaults__ or {})["get"] is fetch
 
 
 FAILURES: dict[str, tuple[dict[str, bytes], Any, str]] = {
