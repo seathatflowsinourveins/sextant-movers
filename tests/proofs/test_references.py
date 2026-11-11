@@ -20,23 +20,23 @@ import pytest
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from exchange_calendars import get_calendar
+from test_bars import Count, Session, client, offline, script  # noqa: F401 (autouse fixture)
+
+from sextant_movers.ranking import bars
+from sextant_movers.ranking import references as refs
 from sextant_movers.ranking.references import (
     AlpacaDailyBars,
     AlpacaSource,
     collect_references,
     prior_sessions,
 )
-from test_bars import Count, Session, client, offline, script  # noqa: F401 (autouse fixture)
-
-from sextant_movers.ranking import bars
-from sextant_movers.ranking import references as refs
 
 D = Decimal
 DAY = date(2026, 1, 7)
 URL = "https://data.alpaca.markets/v2/stocks/bars"
 REFERENCE_BLOB = "e3345d330725a4ad12d6e517ae74c592d3633ffe"  # prestage.py at the reference commit
 # SHA-256 of the canonical answers; the `local` proof shows the reference gives the same.
-ANSWERS_DIGEST = "0"
+ANSWERS_DIGEST = "2cc33e7c7d6bbd2c40a8a7a3a12bd4d058a86bc0b372c6b0db07cde98e636be5"
 
 
 def iso(*days: date) -> list[str]:
@@ -87,9 +87,10 @@ def test_a_count_beyond_sixty_days_is_answered_where_the_reference_refuses() -> 
 
 def test_a_window_before_the_first_session_is_the_calendars_own_refusal() -> None:
     calendar = get_calendar("XNYS")
-    day = calendar.sessions[3].date()
+    sessions = list(calendar.sessions)
     with pytest.raises(ValueError) as theirs:
-        calendar.sessions_window(calendar.sessions[2], -10)
+        calendar.sessions_window(sessions[2], -10)
+    day = sessions[3].date()
     with pytest.raises(ValueError) as ours:
         prior_sessions(day, count=10)
     assert str(ours.value) == str(theirs.value)
@@ -214,6 +215,9 @@ def test_a_null_bars_body_fails_inside_the_sdk_before_the_bar_set() -> None:
 class Fixed:
     def __init__(self, closes: dict[str, Decimal]) -> None:
         self.closes, self.calls = closes, []
+
+    def minute_bars(self, symbols: Any, *, start: datetime, end: datetime) -> tuple[bars.Bar, ...]:
+        raise AssertionError("the references read no minute bars")
 
     def daily_closes(self, symbols: Any, *, day: date) -> dict[str, Decimal]:
         self.calls.append((symbols, day))
@@ -430,8 +434,11 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     theirs = json.loads(line.removeprefix("PARITY "))
     from importlib.metadata import version
 
-    ours = canonical(answer_all(this_side()))
+    answers = answer_all(this_side())
+    ours = canonical(answers)
+    print("parity:", *(f"{len(v)} {k}" for k, v in answers.items()))
     mine = (sys.version.split()[0], version("alpaca-py"), version("exchange_calendars"))
-    print(f"parity: this side Python {mine[0]} alpaca-py {mine[1]} exchange_calendars {mine[2]}")
-    print(f"the reference Python {theirs['python']} alpaca-py {theirs['sdk']}", theirs["calendar"])
+    print(f"this side: Python {mine[0]} alpaca-py {mine[1]} exchange_calendars {mine[2]}")
+    print(f"the reference: Python {theirs['python']} alpaca-py {theirs['sdk']}", end=" ")
+    print(f"exchange_calendars {theirs['calendar']}")
     assert theirs["answers"] == ours
