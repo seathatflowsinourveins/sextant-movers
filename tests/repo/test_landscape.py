@@ -2,9 +2,10 @@
 
 Every top-level package or module under src/sextant_movers/ is named in some row's Package cell,
 so coverage cannot drift (docs/design.md, "Landscape coverage"; ADR-0002 item 5). Each row of the
-Capabilities and runner-up tables holds one of the landscape's own four states; an adopted or
-candidate row has a 40-hex pin or says "not pinned yet:" and why; a no-source row says why; a
-rejected row covers no package. The package imports neither Sextant nor an order-placing client.
+Capabilities table and of every table with a State column holds one of the landscape's own four
+states; an adopted or candidate row has a 40-hex pin or says "not pinned yet:" and why; a
+no-source row says why; a rejected row covers no package. The package imports neither Sextant
+nor an order-placing client.
 
 Source: this repository's pattern of a Markdown table a test reads
 (tests/proofs/test_manifest_union.py). The tables and the states are read from the file; the test
@@ -70,10 +71,10 @@ def uncovered(package: Path, text: str) -> list[str]:
 
 
 def _rows(text: str) -> list[tuple[str, Row]]:
-    """(state cell, row) for the Capabilities and the runner-up tables."""
+    """(state cell, row) for the Capabilities table and every table with a State column."""
     tables = _tables(text)
     capabilities = [(row["Chosen and state"], row) for row in tables["Capabilities"]]
-    others = [(row["State"], row) for row in tables["Runner-ups and other candidates"]]
+    others = [(row["State"], row) for rows in tables.values() for row in rows if "State" in row]
     return capabilities + others
 
 
