@@ -265,13 +265,14 @@ def test_a_table_reports_the_slices_it_holds() -> None:  # ported
 
 FEED, DOWN = "baseline source and feed required", "cumulative baseline decreases"
 NOT_DECIMAL, TWICE = "baseline values must be Decimal", "duplicate baseline offset"
+FLOAT: Any = 1.5
 
 
 @pytest.mark.parametrize(
     ("make", "error", "message"),
     [
         (lambda: sample("10-22", -1, "0"), ValueError, "negative baseline offset"),
-        (lambda: BaselineSample("Z", "PRE", "x", 0, 1.5, D(0)), TypeError, NOT_DECIMAL),
+        (lambda: BaselineSample("Z", "PRE", "x", 0, FLOAT, D(0)), TypeError, NOT_DECIMAL),
         (lambda: sample("10-22", 0, "NaN"), ValueError, "invalid baseline value"),
         (lambda: sample("10-22", 0, "0", "-1"), ValueError, "invalid baseline value"),
         (lambda: table(feed="iex"), ValueError, FEED),
