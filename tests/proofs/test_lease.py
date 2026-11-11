@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 import sextant_movers.lease as lease_module
 from sextant_movers.lease import AccountScope, LeaseError, WriterLease, reserve_stream
 
