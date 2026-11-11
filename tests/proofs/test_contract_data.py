@@ -30,8 +30,9 @@ BUILT = {
     "prior_sessions": references.prior_sessions,
     "validate": listings.validate,
 }
-# What the reference's ranking-inputs module takes from its listings, bars and prestage modules
-# (`src/sextant/data/ranking_inputs.py:26-39,53-63,123` at 06562bec0898a7203f4eaf69086ced83d2477e6b).
+# What the reference's ranking-inputs module takes from its listings, bars and prestage modules:
+# `src/sextant/data/ranking_inputs.py:26-39,53-63,123` at
+# 06562bec0898a7203f4eaf69086ced83d2477e6b.
 REFERENCE_USES = {
     "ASSET_SOURCE",
     "HEADERS",
