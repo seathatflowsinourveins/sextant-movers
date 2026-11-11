@@ -1,0 +1,11 @@
+# dsh-v0.2.1-rc.5 profile.ts defaults; TUI v0.18.0 getting-started build decisions.
+# onnxruntime-node rides @kenz1117/dsh-engram's @huggingface/transformers (quality set):
+# its tarball ships prebuilt napi binaries, so no install-time build runs.
+packages:
+  - .
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  '@google/genai': false
+  onnxruntime-node: false
+  protobufjs: false
