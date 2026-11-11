@@ -364,7 +364,8 @@ def test_the_symbols_are_requested_once_each_in_sorted_chunks() -> None:
 
 
 def test_a_batch_above_two_hundred_is_one_request() -> None:
-    names = ["ZZQ" + "".join(pair) for pair in product("ABCDEFGHIJ", repeat=2)][:201]
+    names = ["ZZ" + "".join(three) for three in product("ABCDEFGHIJ", repeat=3)][:201]
+    assert len(names) == 201
     paced, pacer, session = client(m, lambda params, n: (200, {"bars": {}}))
     source = AlpacaBarSource(paced, batch=201, feed=DataFeed.SIP)
     assert source.minute_bars(names, start=START, end=END) == ()
