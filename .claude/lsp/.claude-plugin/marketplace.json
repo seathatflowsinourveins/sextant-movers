@@ -1,5 +1,5 @@
 {
-  "name": "sextant-lsp",
+  "name": "movers-lsp",
   "description": "Two verbatim official Claude Code LSP plugins; provenance in ORIGINS.md",
   "owner": { "name": "Sextant" },
   "plugins": [
