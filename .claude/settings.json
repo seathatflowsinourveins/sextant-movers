@@ -231,8 +231,8 @@
     "superpowers@superpowers-dev": true,
     "compound-engineering@compound-engineering-plugin": true,
     "claude-hud@claude-hud": true,
-    "pyright-lsp@sextant-lsp": true,
-    "typescript-lsp@sextant-lsp": true
+    "pyright-lsp@movers-lsp": true,
+    "typescript-lsp@movers-lsp": true
   },
   "extraKnownMarketplaces": {
     "superpowers-dev": {
@@ -259,7 +259,7 @@
       },
       "autoUpdate": false
     },
-    "sextant-lsp": {
+    "movers-lsp": {
       "source": {
         "source": "directory",
         "path": "./.claude/lsp"

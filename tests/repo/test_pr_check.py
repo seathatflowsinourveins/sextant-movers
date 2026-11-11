@@ -358,10 +358,10 @@ def test_the_script_cites_no_issue_of_another_repository() -> None:
     assert re.search(r"#\d", (ROOT / "scripts" / "pr-check.sh").read_text()) is None
 
 
-def test_the_justfile_chains_the_check_before_the_push_and_keeps_44_lines() -> None:
+def test_the_justfile_chains_the_check_before_the_push_and_keeps_45_lines() -> None:
     lines = (ROOT / "justfile").read_text().splitlines()
-    assert len(lines) == 44
-    assert lines[41] == '    bash scripts/pr-check.sh "{{body_file}}" && git push -u origin HEAD'
+    assert len(lines) == 45
+    assert lines[42] == '    bash scripts/pr-check.sh "{{body_file}}" && git push -u origin HEAD'
 
 
 def test_the_manifest_row_names_the_local_check_and_its_proofs() -> None:
