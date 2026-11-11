@@ -173,7 +173,7 @@ jobs:
           output-schema-file: .github/gate/verdict.schema.json
           allow-users: ${{ github.event.workflow_run.actor.login }}
           allow-bots: true
-          allow-bot-users: 'dependabot[bot],your-github-app-slug[bot]'
+          allow-bot-users: 'dependabot[bot]'
       - id: verdict
         # A failed review action still runs this step so the missing verdict is named.
         if: always()
@@ -228,7 +228,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           allowed_non_write_users: ${{ github.event.workflow_run.actor.login }}
-          allowed_bots: 'dependabot[bot],github-actions[bot],your-github-app-slug[bot]'
+          allowed_bots: 'dependabot[bot],github-actions[bot]'
           classify_inline_comments: 'false'
           prompt: ${{ steps.text.outputs.text }}
           claude_args: >-

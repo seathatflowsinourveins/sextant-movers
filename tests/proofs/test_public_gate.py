@@ -4,7 +4,6 @@ Sources: .github/gate/upstreams.json and google/eng-practices@3bb3ec25:
 review/reviewer/standard.md:31-34,72,88-90; review/developer/small-cls.md:175.
 """
 
-import fnmatch
 import hashlib
 import json
 import re
@@ -192,69 +191,32 @@ def test_quality_verdict_runs_even_when_the_review_action_fails() -> None:
         assert verdict.get("if") == "always()", family
 
 
-def test_paper_carveout_keeps_only_the_hard_lines_blocking() -> None:
+def test_always_p0_holds_the_generic_lines_and_this_repositorys_hard_lines() -> None:
     rules = (WORKFLOWS / "shared/review-rules.md").read_text()
-    owner = (
-        "it is only paper and i can reset them anytime,never gate the e2e and sota workflow , "
-        "we need full automation on paper lane rather than so afraid of touch the order, "
-        "they meant to be automated with sota stratiges, exit, reentry etc"
-    )
-    assert owner in rules
-    carveout = rules.split("paper carve-out", 1)[1]
+    always = rules.split("## Always P0 in this repo", 1)[1].split("\n\n", 1)[0]
     for required in (
-        "lanes/paper/",
-        "src/sextant/paper/",
-        "secret",
-        "live",
-        "one writer per account",
-        "Decimal",
-        "never cancelled, sold back or resized",
-        "ONE follow-up issue",
+        # Kept from the harness.
+        "**Self-invention, the repo's first rule:**",
+        "A secret, key or token in a file, log, command line or URL.",
+        "Weakening a gate without saying so and why",
+        "An unrequested destructive action on data or on the repo.",
+        # This repository's own hard lines.
+        "Any code that places an order, or any import of a trading client.",
+        "TradingView used as a signal or as an input to the rank",
+        "reached by anything other than its official interface",
+        "Recorded market data, a symbol, price, quantity, order id, account id or private path",
+        "in the repository or in PR text",
+        "A broker stream opened without holding the account lease.",
     ):
-        assert required in carveout
-    assert "source" in carveout and "ci" in carveout
+        assert required in always, required
+    for retired in ("live order", "Floats for money"):
+        assert retired not in always, retired
 
 
-def test_paper_and_e2e_carveout_is_finding_level() -> None:
-    """One fixture per class of the finding-level scope widening #99."""
+def test_no_carveout_relaxes_the_review_verdict() -> None:
     rules = (WORKFLOWS / "shared/review-rules.md").read_text()
-    carveout = rules.split("paper carve-out", 1)[1].split("\n\n", 1)[0]
-    # Finding-level, not PR-level: #99's all-or-nothing diff rule is gone.
-    assert "A diff is paper-only" not in rules
-    assert "On a paper-only diff" not in rules
-    for required in ("per finding", "located in", "mixed PR", "same PR", "blocks `review` ONLY"):
-        assert required in carveout
-    paper_e2e = (
-        ("lanes/paper/README.md", "lanes/paper/**"),
-        ("src/sextant/paper/b_protector.py", "src/sextant/paper/**"),
-        ("src/sextant/backtest/replay.py", "src/sextant/backtest/**"),
-        ("tests/proofs/test_paper_node.py", "test_paper*"),
-        ("tests/proofs/test_b_protector.py", "test_b_*"),
-        ("tests/proofs/test_ac_node.py", "test_ac_*"),
-        ("tests/proofs/test_outside_rth_trail.py", "test_outside_rth*"),
-        ("tests/proofs/entry/test_replay.py", "test_replay*"),
-    )
-    for example, pattern in paper_e2e:
-        assert pattern in carveout, pattern
-        assert fnmatch.fnmatch(example, pattern) or fnmatch.fnmatch(Path(example).name, pattern), (
-            example
-        )
-    # The manifest-hunk class: judged by its hunk, not by the whole file.
-    assert "docs/manifest.md` hunks whose row source names" in carveout
-    stay_normal = carveout.split("stay normal", 1)[1]
-    for example, pattern in (
-        ("docs/adr/0007-custody-and-order-writing.md", "docs/adr/**"),
-        ("src/sextant/execution/custody.py", "src/sextant/execution/**"),
-        (".github/workflows/gate.yml", ".github/**"),
-    ):
-        assert pattern in stay_normal, pattern
-        assert fnmatch.fnmatch(example, pattern), example
-        assert not any(
-            fnmatch.fnmatch(example, other) or fnmatch.fnmatch(Path(example).name, other)
-            for _, other in paper_e2e
-        ), example
-    for required in ("both a paper or e2e path", "no paper or e2e location"):
-        assert required in carveout
+    for retired in ("carve-out", "paper lane", "paper and e2e", "lanes/", "src/sextant/", "#128"):
+        assert retired not in rules, retired
 
 
 def test_upstream_first_rule_names_the_sdk_call_and_its_severity() -> None:
@@ -274,24 +236,26 @@ def test_upstream_first_rule_names_the_sdk_call_and_its_severity() -> None:
         "calculators",
         "data clients",
         "OAuth flows",
-        # The finding names the SDK call to use instead.
-        "TradingClient",
-        "StockHistoricalDataClient",
+        # The finding names the SDK call to use instead: this repository's pinned SDKs.
+        "`ScreenerClient`",
+        "`StockHistoricalDataClient`",
+        "`StockDataStream`",
         "NautilusTrader's own components",
-        "the MCP SDK",
-        "edgartools",
-        # Severity: P1 on normal paths, a follow-up under #128 on paper paths.
+        "exchange_calendars' `get_calendar`",
+        "the MCP Python SDK's `MCPServer`",
+        "Lightweight Charts",
+        # Severity: P1 on normal paths with its witness, otherwise never blocking.
         "[P1]",
-        "#128",
-        "never blocking",
-        # The example witness: #74's hand-built HTTP transport.
-        "#74",
-        "src/sextant/execution/alpaca_transport.py",
+        "never blocks",
+        # The example witness, from Sextant.
+        "hand-built HTTP transport",
         # Using the upstream, or carrying it verbatim, is not re-implementing it.
         "not re-implementing it",
         "not an Always P0",
     ):
         assert required in upstream_first, required
+    for retired in ("TradingClient", "edgartools", "src/sextant/"):
+        assert retired not in upstream_first, retired
     # The Report verdict admits the witnessed P1 on normal paths, and only then.
     report = rules.split("## Report", 1)[1]
     assert "upstream-first duplication on a normal path" in report
