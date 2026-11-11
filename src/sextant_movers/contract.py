@@ -9,14 +9,16 @@ and Sextant reads them through `Registry`. The consumer exposes names and vetoes
 no order, execution, broker or account surface. Display only, never a signal; no orders.
 
 Exported so far: `Registry` and `RegistryRow` (build part 3a), `TradeWindow` and `NS` (part 4a,
-`NS` is the window module's), `BaselineTable`, `Segment` and `segment_start` (part 4b). `__all__`
-is the whole public namespace, and each name is its builder module's own object, never a copy.
+`NS` is the window module's), `BaselineTable`, `Segment` and `segment_start` (part 4b), and
+`ranking_data_type` (part 5d). `__all__` is the whole public namespace, and each name is its
+builder module's own object, never a copy.
 
 Source: docs/design.md, "The contract"; ADR-0002, decision 3; `__all__` as the public names of a
 module, python/cpython@v3.13.18 `Doc/reference/simple_stmts.rst:833-846`.
 """
 
 from sextant_movers.ranking.baseline import BaselineTable, Segment, segment_start
+from sextant_movers.ranking.publisher import ranking_data_type
 from sextant_movers.ranking.registry import Registry, RegistryRow
 from sextant_movers.ranking.window import NS, TradeWindow
 
@@ -27,5 +29,6 @@ __all__ = [
     "RegistryRow",
     "Segment",
     "TradeWindow",
+    "ranking_data_type",
     "segment_start",
 ]

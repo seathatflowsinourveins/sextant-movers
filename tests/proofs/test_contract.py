@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import sextant_movers.contract as contract
-from sextant_movers.ranking import baseline, registry, window
+from sextant_movers.ranking import baseline, publisher, registry, window
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILT = {
@@ -22,6 +22,7 @@ BUILT = {
     "RegistryRow": registry.RegistryRow,
     "Segment": baseline.Segment,
     "TradeWindow": window.TradeWindow,
+    "ranking_data_type": publisher.ranking_data_type,
     "segment_start": baseline.segment_start,
 }
 
