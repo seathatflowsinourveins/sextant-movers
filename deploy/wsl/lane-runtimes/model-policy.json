@@ -1,0 +1,52 @@
+{
+  "read_date": "2026-11-09",
+  "comparison_source": "https://artificialanalysis.ai/models",
+  "authority": "The sextant-movers lead's role table, 2026-11-11: lead fable; dispatcher and lander claude-sonnet-5-5; worker claude-opus-5-5; all at high. Carried from Sextant's deploy/wsl/lane-runtimes/model-policy.json (see ORIGINS.md)",
+  "claude": {
+    "runtime": "native Claude Code",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "read_date": "2026-11-09",
+    "launch": "python3 scripts/role_launch.py worker",
+    "session_name": "worker",
+    "autocompact_window": null,
+    "advisor": null,
+    "pinned_in": ".claude/settings.json (the model and the project effortLevel) and .claude/agents/worker.md: worker sessions",
+    "authority": "The sextant-movers lead's role table, 2026-11-11; Opus 5.5 is the Claude workhorse in Sextant's ADR-0030 (2026-11-09 amendment, effort by role) and moves on the owner's word only",
+    "vendor_source": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+    "effort_source": "https://platform.claude.com/docs/en/build-with-claude/effort"
+  },
+  "claude_lead": {
+    "runtime": "native Claude Code",
+    "model": "fable",
+    "effort": "high",
+    "read_date": "2026-11-09",
+    "launch": "python3 scripts/role_launch.py lead",
+    "session_name": "lead",
+    "autocompact_window": 200000,
+    "autocompact_window_calibration": "UNCALIBRATED",
+    "autocompact_window_source": "https://code.claude.com/docs/en/model-config (autoCompactWindow's 100,000-1,000,000 range) and https://code.claude.com/docs/en/settings-reference (idleCompaction's 200,000 threshold), read 2026-11-09",
+    "advisor": null,
+    "pinned_in": "the lead tab's launch (`.claude/agents/lead.md` and `python3 scripts/role_launch.py lead`)",
+    "authority": "The sextant-movers lead's role table, 2026-11-11. The pin is Claude Code's `fable` alias, so the surface follows the newest Fable the installed build resolves, as in Sextant's ADR-0030 (2026-11-11 amendment)",
+    "vendor_source": "https://platform.claude.com/docs/en/models/fable-5-2/overview",
+    "alias_source": "https://code.claude.com/docs/en/model-config, read 2026-11-09: the fable alias resolves to Fable 5.2, which requires Claude Code 2.1.321 or later; measured in Sextant 2026-11-11 on Claude Code 2.1.322: `claude -p --model fable --output-format json` reported modelUsage `claude-fable-5-2`",
+    "effort_source": "https://platform.claude.com/docs/en/build-with-claude/effort"
+  },
+  "claude_roles": {
+    "runtime": "native Claude Code",
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "read_date": "2026-11-09",
+    "launch": "python3 scripts/role_launch.py <dispatcher|lander>",
+    "session_name": "<role>",
+    "autocompact_window": 200000,
+    "autocompact_window_calibration": "UNCALIBRATED",
+    "autocompact_window_source": "https://code.claude.com/docs/en/model-config (autoCompactWindow's 100,000-1,000,000 range) and https://code.claude.com/docs/en/settings-reference (idleCompaction's 200,000 threshold), read 2026-11-09",
+    "advisor": null,
+    "pinned_in": "the dispatcher and lander tabs' launches (`.claude/agents/<role>.md` and `python3 scripts/role_launch.py`)",
+    "authority": "The sextant-movers lead's role table, 2026-11-11, following Sextant's move of the dispatcher and lander to Sonnet 5.5 (ADR-0030, 2026-11-09 amendment, effort by role)",
+    "vendor_source": "https://code.claude.com/docs/en/model-config",
+    "effort_source": "https://platform.claude.com/docs/en/build-with-claude/effort"
+  }
+}
