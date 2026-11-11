@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from sextant_movers import atomic
 from sextant_movers.atomic import write_atomic
 
 VALUE = {"b": [1, 2, 3], "a": {"nested": "text"}}
@@ -83,3 +84,30 @@ def test_the_file_then_the_directory_are_synced_around_the_replace(
     write_atomic(path, VALUE)
     assert [name for name, _ in events] == ["fsync-file", "replace", "fsync-directory"]
     assert events[1] == ("replace", "doc.json")
+
+
+def test_a_failure_after_the_replace_raises_with_the_new_content_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "doc.json"
+    write_atomic(path, {"old": 1})
+    real_fsync = os.fsync
+    replaced: list[bool] = []
+    real_replace = os.replace
+
+    def spy_replace(source: str, target: Path) -> None:
+        real_replace(source, target)
+        replaced.append(True)
+
+    def failing_directory_sync(fd: int) -> None:
+        if replaced:
+            raise OSError("directory sync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "replace", spy_replace)
+    monkeypatch.setattr(os, "fsync", failing_directory_sync)
+    with pytest.raises(OSError, match="directory sync failed"):
+        write_atomic(path, VALUE)
+    assert json.loads(path.read_text()) == VALUE
+    assert [entry.name for entry in tmp_path.iterdir()] == ["doc.json"]
+    assert "after the rename" in (atomic.__doc__ or "")
