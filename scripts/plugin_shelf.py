@@ -3,8 +3,9 @@
 
 Built on the origin repository's `deploy/wsl/shelf.sh` and `scripts/runtime_doctor.py`
 at 7252b0f5c7ccdb416356aaddd9b53fa9a33bd405: marketplaces at scope user, plugins at
-scope local, from the main checkout. Sources and measurements: docs/manifest.md,
-"Shelf install step and its session-start check".
+scope local, from the main checkout. Both modes read the plugin set from the main
+checkout's .claude/settings.json, the only one `--install` acts on. Sources and
+measurements: docs/manifest.md, "Shelf install step and its session-start check".
 """
 
 from __future__ import annotations
@@ -29,7 +30,11 @@ REMEDY = (
 
 
 class Stop(Exception):
-    """One line for stderr, then exit 1."""
+    """One line for stderr, then exit 1; `code` is the exit status of a command that ran."""
+
+    def __init__(self, line: str, code: int | None = None) -> None:
+        super().__init__(line)
+        self.code = code
 
 
 def run(command: list[str], cwd: Path, show: bool = False) -> str:
@@ -50,7 +55,9 @@ def run(command: list[str], cwd: Path, show: bool = False) -> str:
     except OSError as error:
         raise Stop(f"`{shown}` did not start: {error.strerror}") from None
     if done.returncode != 0:
-        raise Stop(f"`{shown}` exited {done.returncode}")
+        said = (done.stderr or "").strip().splitlines()[-1:]  # captured only when not `show`
+        why = f"`{shown}` exited {done.returncode}" + "".join(": " + line for line in said)
+        raise Stop(why, done.returncode)
     return done.stdout or ""
 
 
@@ -129,7 +136,10 @@ def install() -> int:
         raise Stop(refused)
     try:
         run(["git", "check-ignore", "-q", LOCAL], main)
-    except Stop:
+    except Stop as stop:
+        # git-check-ignore(1): 1 is "None of the provided paths are ignored", 128 a fatal error.
+        if stop.code != 1:
+            raise
         raise Stop(f"git does not ignore {LOCAL} in {main}, which a local install writes") from None
     tracked = run(["git", "diff", "HEAD", "--binary"], main)
     for command in commands(declared):
@@ -150,14 +160,14 @@ def check() -> int:
         and row.get("projectEnabled") is True
         and Path(str(row.get("installPath"))).is_dir()
     }
-    absent = [plugin for plugin in enabled(settings(ROOT)) if plugin not in here]
+    absent = [plugin for plugin in enabled(settings(main)) if plugin not in here]
     if absent:
         raise Stop(
-            f"enabled in .claude/settings.json but not installed for the main checkout {main}: "
+            f"enabled in the main checkout's .claude/settings.json but not installed for {main}: "
             + ", ".join(absent)
             + f"; fix: {FIX}"
         )
-    print(f"ok: every plugin .claude/settings.json enables is installed for {main}")
+    print(f"ok: every plugin the main checkout's settings enable is installed for {main}")
     return 0
 
 
