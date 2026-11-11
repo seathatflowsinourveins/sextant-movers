@@ -448,6 +448,154 @@ def test_a_colon_in_the_broker_is_refused_and_the_key_stays_the_references() -> 
     assert AccountScope("MADE_UP", "BROKER:account").key == "MADE_UP:BROKER:account"
 
 
+def test_the_lock_descriptor_is_not_inheritable_across_exec(tmp_path: Path) -> None:
+    """PEP 446: `os.open` makes a non-inheritable descriptor; only a fork without exec copies it."""
+    lease = WriterLease(SCOPE, tmp_path, "w")
+    lease.acquire()
+    try:
+        assert lease.fd is not None and os.get_inheritable(lease.fd) is False
+    finally:
+        lease.close()
+
+
+def _same_file(fd: int, path: Path) -> bool:
+    try:
+        held, named = os.fstat(fd), os.stat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _report_lock_descriptors(path: Path, report_w: int, go_r: int) -> None:
+    """In a forked child: count the descriptors open on the lock file, report, wait, exit.
+
+    /proc/self/fd lists every descriptor the process has open (proc(5)), and (st_dev, st_ino)
+    from fstat names the file each one refers to, whatever path opened it."""
+    status = 1
+    try:
+        count = sum(_same_file(int(name), path) for name in os.listdir("/proc/self/fd"))
+        os.write(report_w, f"{count}\n".encode())
+        os.read(go_r, 1)
+        status = 0
+    finally:
+        os._exit(status)
+
+
+class _GuardProbe:
+    """Stands in for the module's fork guard, an RLock, and records the threads that tried it."""
+
+    def __init__(self, progress: threading.Condition) -> None:
+        self.lock, self.progress, self.tried = threading.RLock(), progress, set()
+
+    def acquire(self) -> bool:
+        with self.progress:
+            self.tried.add(threading.get_ident())
+            self.progress.notify_all()
+        return self.lock.acquire()
+
+    def release(self) -> None:
+        self.lock.release()
+
+    def __enter__(self) -> None:
+        self.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+@pytest.mark.parametrize("window", ["open", "close", "failed-acquire"])
+def test_a_fork_from_another_thread_never_copies_an_unrecorded_descriptor(
+    tmp_path: Path, monkeypatch, window: str
+) -> None:
+    """A thread stands between a descriptor's open or close and its record; another thread forks.
+
+    The child must hold no copy of the lock file, so after the parent's close a contender acquires
+    while the child is alive; and the fork must wait until the window has passed."""
+    lock = tmp_path / f"{_digest(SCOPE)}.lock"
+    lease = WriterLease(SCOPE, tmp_path, "parent")
+    if window == "close":
+        lease.acquire()
+    progress = threading.Condition()
+    probe = _GuardProbe(progress)
+    monkeypatch.setattr(lease_module, "_GUARD", probe, raising=False)
+    inside, go = threading.Event(), threading.Event()
+    real_open, real_close = os.open, os.close
+    errors: list[BaseException] = []
+    forked: list[int] = []
+    report_r, report_w = os.pipe()
+    go_r, go_w = os.pipe()
+
+    def paused_open(path, *args, **kwargs) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if window == "open" and Path(path) == lock:
+            inside.set()
+            assert go.wait(WAIT)
+        return fd
+
+    def paused_close(fd: int) -> None:
+        if window != "open" and not inside.is_set() and _same_file(fd, lock):
+            inside.set()
+            assert go.wait(WAIT)
+        real_close(fd)
+
+    def step() -> None:
+        try:
+            lease.close() if window == "close" else lease.acquire()
+        except BaseException as error:
+            errors.append(error)
+
+    def fork() -> None:
+        pid = os.fork()
+        if pid == 0:
+            _report_lock_descriptors(lock, report_w, go_r)
+        with progress:
+            forked.append(pid)
+            progress.notify_all()
+
+    monkeypatch.setattr(os, "open", paused_open)
+    monkeypatch.setattr(os, "close", paused_close)
+    if window == "failed-acquire":
+        no_locks = OSError(errno.ENOLCK, "no locks available")
+        monkeypatch.setattr(lease_module.fcntl, "flock", _raises(no_locks))
+    stepper = threading.Thread(target=step)
+    stepper.start()
+    forker = threading.Thread(target=fork)
+    try:
+        assert inside.wait(WAIT), "the step never reached its window"
+        forker.start()
+        with progress:  # the fork either completed or waits at the guard
+            assert progress.wait_for(lambda: forked or forker.ident in probe.tried, WAIT)
+            forked_inside_the_window = bool(forked)
+        go.set()
+        stepper.join(WAIT)
+        forker.join(WAIT)
+        monkeypatch.undo()
+        assert forked and forked[0] > 0, "the fork did not happen"
+        assert select.select([report_r], [], [], WAIT)[0], "the child did not answer"
+        copies = int(os.read(report_r, 20))
+        lease.close()
+        contender = WriterLease(SCOPE, tmp_path, "contender")
+        try:
+            contender.acquire()
+            refused = False
+        except LeaseError:
+            refused = True
+        assert os.waitpid(forked[0], os.WNOHANG) == (0, 0), "the child must still be alive"
+        contender.close()
+        assert (copies, refused, forked_inside_the_window) == (0, False, False)
+        assert [type(e) for e in errors] == ([OSError] if window == "failed-acquire" else [])
+    finally:
+        go.set()
+        monkeypatch.undo()
+        os.write(go_w, b"x")
+        for fd in (go_w, go_r, report_w, report_r):
+            os.close(fd)
+        if forked and forked[0] > 0:
+            _, status = os.waitpid(forked[0], 0)
+            assert os.waitstatus_to_exitcode(status) == 0
+        lease.close()
+
+
 # --- across processes --------------------------------------------------------------------------
 
 LEASE_CHILD = """
@@ -501,6 +649,28 @@ except RuntimeError:
 else:
     print("closed", lease.held, flush=True)
 sys.stdin.readline()
+"""
+
+# A fork from the lease's own thread, inside the window between the open and the record.
+SAME_THREAD_FORK_CHILD = """
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from sextant_movers.lease import AccountScope, WriterLease
+real_open = os.open
+def open_then_fork(*args, **kwargs):
+    fd = real_open(*args, **kwargs)
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    print("forked", os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]), flush=True)
+    return fd
+os.open = open_then_fork
+lease = WriterLease(AccountScope(sys.argv[3], sys.argv[4]), Path(sys.argv[2]), "child")
+lease.acquire()
+os.open = real_open
+lease.close()
+print("done", lease.held, flush=True)
 """
 
 # The REAL reference lease, imported in the child from the directory `MOVERS_REFERENCE_SRC` names.
@@ -615,6 +785,21 @@ def test_reserve_stream_holds_the_lease_for_its_whole_block(tmp_path: Path, endi
         parent.close()
     finally:
         _finish(child)
+
+
+def test_a_fork_from_the_lease_own_thread_inside_the_window_does_not_deadlock(
+    tmp_path: Path,
+) -> None:
+    """The fork guard is reentrant, so a fork made inside the window by the thread that holds it
+    (a signal handler, say) proceeds instead of waiting on itself."""
+    child = _start(SAME_THREAD_FORK_CHILD, tmp_path)
+    try:
+        lines = [_line(child), _line(child)]
+    except AssertionError:
+        child.kill()
+        raise
+    _finish(child)
+    assert lines == ["forked 0", "done False"]
 
 
 @pytest.mark.local
