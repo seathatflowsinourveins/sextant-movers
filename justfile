@@ -1,5 +1,5 @@
 # The gate recipes of Sextant's justfile (see ORIGINS.md), unchanged except `session-start`, which
-# keeps the two checks whose scripts ship here; Sextant's host-specific recipes are not included.
+# keeps the checks whose scripts ship here; Sextant's host-specific recipes are not included.
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 default:
@@ -12,10 +12,11 @@ sync:
 # Everything the required `ci` check runs.
 ci: sync lint test secrets
 
-# Check the locked dsh profile, the live profile and the generated ecosystem index.
+# Check the locked dsh profile, the live profile, the ecosystem index and the compaction wiring.
 session-start:
     python3 scripts/dsh_profile_doctor.py
     python3 scripts/ecosystem_index.py --check
+    python3 -I scripts/compact_context.py --check </dev/null
 
 lint:
     uv run --frozen ruff check .
