@@ -7,16 +7,21 @@ it proves only our argument list, and the real run is in the PR.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
+
+import pytest
 
 ROOT = Path(__file__).parents[2]
 SETTINGS = json.loads((ROOT / ".claude/settings.json").read_text())
 FIX = "python3 scripts/plugin_shelf.py --install </dev/null"
 CHECK = "python3 scripts/plugin_shelf.py --check </dev/null"
+LOCAL = ".claude/settings.local.json"
 LISTED = [["plugin", "marketplace", "list", "--json"]]
 STUB = """\
 import json, os, sys
@@ -245,6 +250,83 @@ def test_check_fails_naming_each_plugin_without_a_main_checkout_record(tmp_path:
             assert result.returncode == 1
             line = _one_line(result.stderr)
             assert all(plugin in line for plugin in _enabled()) and FIX in line
+
+
+def test_a_worktree_that_enables_one_more_id_is_checked_against_the_main_checkout(
+    tmp_path: Path,
+) -> None:
+    main, task = _repo(tmp_path)
+    declared = json.loads((task / ".claude/settings.json").read_text())
+    declared["enabledPlugins"]["made-up@shelf-proof"] = True
+    (task / ".claude/settings.json").write_text(json.dumps(declared))
+    # `--install` reads the main checkout's set wherever it starts, so it never installs the id.
+    result, calls = _run(tmp_path, task, "--install")
+    assert result.returncode == 0, result.stderr
+    assert not any("made-up@shelf-proof" in call["argv"] for call in calls)
+    # `--check` reads the same set, so the fix line it prints is one that can clear it.
+    for checkout in (task, main):
+        result, _ = _run(tmp_path, checkout, "--check", records=_records(main))
+        assert result.returncode == 0, result.stderr
+        assert "main checkout" in result.stdout
+
+
+def _shelf(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, main: Path) -> ModuleType:
+    """The script as a module, with `main` as its main checkout and no marketplace listed."""
+    spec = importlib.util.spec_from_file_location("plugin_shelf", ROOT / "scripts/plugin_shelf.py")
+    assert spec and spec.loader
+    shelf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shelf)
+    (main / ".claude").mkdir(parents=True)
+    (main / ".claude/settings.json").write_text('{"enabledPlugins": {"made-up@shelf": true}}')
+    monkeypatch.setattr(shelf, "main_checkout", lambda: main)
+    monkeypatch.setattr(shelf, "rows", lambda command, cwd: [])
+    env = {"HOME": tmp_path, "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": 1}
+    for key, value in {**env, "GIT_CEILING_DIRECTORIES": tmp_path}.items():
+        monkeypatch.setenv(key, str(value))
+    return shelf
+
+
+def _ignore_line(shelf: ModuleType) -> str:
+    with pytest.raises(shelf.Stop) as stop:
+        shelf.install()
+    return str(stop.value)
+
+
+def _check_ignore(main: Path) -> int:
+    return subprocess.run(["git", "check-ignore", "-q", LOCAL], cwd=main, check=False).returncode
+
+
+def test_check_ignore_exit_1_says_git_does_not_ignore_the_local_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    main = tmp_path / "main"
+    shelf = _shelf(monkeypatch, tmp_path, main)
+    _git(tmp_path, main, "init", "-q")
+    assert _check_ignore(main) == 1
+    line = _ignore_line(shelf)
+    assert line == f"git does not ignore {LOCAL} in {main}, which a local install writes"
+
+
+def test_check_ignore_exit_128_names_git_s_fatal_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    main = tmp_path / "not-a-repository"
+    shelf = _shelf(monkeypatch, tmp_path, main)
+    assert _check_ignore(main) == 128
+    line = _ignore_line(shelf)
+    assert "does not ignore" not in line
+    assert f"`git check-ignore -q {LOCAL}` exited 128: fatal: not a git repository" in line
+
+
+def test_check_ignore_without_a_git_binary_says_git_did_not_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    main = tmp_path / "main"
+    shelf = _shelf(monkeypatch, tmp_path, main)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    line = _ignore_line(shelf)
+    assert "does not ignore" not in line
+    assert line == f"`git check-ignore -q {LOCAL}` did not start: No such file or directory"
 
 
 def test_check_without_a_claude_binary_says_so_and_fails(tmp_path: Path) -> None:
