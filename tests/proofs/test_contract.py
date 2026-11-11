@@ -58,7 +58,7 @@ def test_importing_the_contract_never_loads_sextant() -> None:
         "tops = {name.partition('.')[0] for name in sys.modules}\n"
         "print('sextant' in tops)\n"
     )
-    done = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", script], capture_output=True, text=True, check=True
     )
     assert done.stdout.strip() == "False"
