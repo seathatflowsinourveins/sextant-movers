@@ -8,30 +8,24 @@ the baseline and the score engine read four names from it: `TradeTick`, `QuoteTi
 (`python/nautilus_trader/core/datetime.py:81-104`), all at the pin.
 """
 
-import re
-import tomllib
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.metadata import version
 from pathlib import Path
 
+from pins import pinned, upstream_tag
+
 ROOT = Path(__file__).resolve().parents[2]
 DISTRIBUTION = "nautilus-trader"
+ROW = ("nautilus_trader", "nautechsystems/nautilus_trader")
 
 
 def _pinned() -> str:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    pins = [d for d in project["dependencies"] if d.startswith(DISTRIBUTION + "==")]
-    assert len(pins) == 1, f"pyproject.toml pins {DISTRIBUTION} {len(pins)} times, not once"
-    return pins[0].removeprefix(DISTRIBUTION + "==")
+    return pinned((ROOT / "pyproject.toml").read_text(encoding="utf-8"), DISTRIBUTION)
 
 
 def _upstream_tag() -> str:
-    upstreams = (ROOT / "UPSTREAMS.md").read_text(encoding="utf-8")
-    row = r"^\| nautilus_trader \| nautechsystems/nautilus_trader \| (\S+) \| [0-9a-f]{40} \|"
-    tags = re.findall(row, upstreams, re.MULTILINE)
-    assert len(tags) == 1, "UPSTREAMS.md has no single nautilus_trader row"
-    return tags[0]
+    return upstream_tag((ROOT / "UPSTREAMS.md").read_text(encoding="utf-8"), *ROW)
 
 
 def test_the_dependency_pin_is_the_upstream_tag() -> None:

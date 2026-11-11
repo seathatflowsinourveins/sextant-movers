@@ -18,29 +18,23 @@ names loads `alpaca.trading` inside the SDK. This package names no trading or br
 """
 
 import inspect
-import re
-import tomllib
 from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
+from pins import pinned, upstream_tag
+
 ROOT = Path(__file__).resolve().parents[2]
 DISTRIBUTION = "alpaca-py"
+ROW = ("alpaca-py", "alpacahq/alpaca-py")
 
 
 def _pinned() -> str:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    pins = [d for d in project["dependencies"] if d.startswith(DISTRIBUTION + "==")]
-    assert len(pins) == 1, f"pyproject.toml pins {DISTRIBUTION} {len(pins)} times, not once"
-    return pins[0].removeprefix(DISTRIBUTION + "==")
+    return pinned((ROOT / "pyproject.toml").read_text(encoding="utf-8"), DISTRIBUTION)
 
 
 def _upstream_tag() -> str:
-    upstreams = (ROOT / "UPSTREAMS.md").read_text(encoding="utf-8")
-    row = r"^\| alpaca-py \| alpacahq/alpaca-py \| (\S+) \| [0-9a-f]{40} \|"
-    tags = re.findall(row, upstreams, re.MULTILINE)
-    assert len(tags) == 1, "UPSTREAMS.md has no single alpaca-py row"
-    return tags[0]
+    return upstream_tag((ROOT / "UPSTREAMS.md").read_text(encoding="utf-8"), *ROW)
 
 
 def test_the_dependency_pin_is_the_upstream_tag() -> None:
