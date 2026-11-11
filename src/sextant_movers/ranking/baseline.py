@@ -10,6 +10,11 @@ minute points; a window is taken within each session, then the median across ses
 difference of medians is not the median of differences). Outside coverage the answer is None,
 never zero, and never an extrapolation.
 
+`build_baseline` makes the table from vendor minute bars and a caller's coverage receipts, and
+receipts are authority: a bar without a receipt, a receipt not complete at ``known_at`` or one
+that does not begin at its segment's usable start is refused, never zero-filled; the current and
+later sessions are dropped, never counted as zero.
+
 Sources: gerrymanoim/exchange_calendars@4.13.2 dbe38b1f6887434bbdd1a7d2df6ff8f1742a048a
 (`get_calendar` calendar_utils.py:237; `session_open`, `session_close`, `date_to_session`
 exchange_calendar.py:1006, 1012, 1281); nautechsystems/nautilus_trader@v2.0.0rc8
@@ -27,7 +32,7 @@ import hashlib
 import json
 from bisect import bisect_left
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -46,6 +51,9 @@ ZERO = Decimal(0)
 NS = 1_000_000_000
 MINUTE_NS = 60 * NS
 _HOUR_NS = 3_600 * NS
+_PROVENANCE_SUFFIX = (
+    "; v*vw, n; explicit complete coverage; linear within minute; first POST minute omitted"
+)
 _BASELINE_KEYS = frozenset({"samples", "provenance", "known_at", "feed"})
 _SAMPLE_KEYS = frozenset(
     {"symbol", "segment", "session", "offset_s", "dollar_volume", "trade_count"}
@@ -66,6 +74,58 @@ class Segment:
             raise ValueError("unsupported segment")
         if not self.source or not 0 <= self.start_ns < self.end_ns:
             raise ValueError("explicit sourced session boundaries required")
+
+
+@dataclass(frozen=True, slots=True)
+class MinuteBarRow:
+    """One vendor minute bar, reduced to what a baseline sums.
+
+    The fields are alpacahq/alpaca-py@v0.44.0 cc4cb3b7ba50ae250e621983c2779047fb16bb28
+    `alpaca/data/models/bars.py:32-34` (floats there; cited, never imported). The engine's `Bar`
+    (nautilus_trader@v2.0.0rc8 `crates/model/src/data/bar.rs:1123-1139`) has no trade count and
+    no VWAP.
+    """
+
+    symbol: str
+    ts_event: int
+    volume: int
+    vwap: Decimal
+    trade_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.ts_event) is not int:
+            raise TypeError("bar timestamps must be integer nanoseconds")
+        if self.ts_event < 0:
+            raise ValueError("negative bar timestamp")
+        if self.ts_event % MINUTE_NS:
+            raise ValueError("bar timestamps must be minute-aligned")
+        if type(self.volume) is not int:
+            raise TypeError("bar volume must be an integer")
+        if self.volume < 0:
+            raise ValueError("negative bar volume")
+        if not isinstance(self.vwap, Decimal):
+            raise TypeError("bar vwap must be Decimal")
+        if not self.vwap.is_finite() or self.vwap < 0:
+            raise ValueError("invalid bar vwap")
+        if type(self.trade_count) is not int:
+            raise TypeError("bar trade count must be an integer")
+        if self.trade_count < 0:
+            raise ValueError("negative bar trade count")
+
+
+@dataclass(frozen=True, slots=True)
+class BaselineCoverage:
+    """A caller's receipt that every bar of ``symbol`` in ``[start_ts, end_ts)`` arrived."""
+
+    symbol: str
+    start_ts: int
+    end_ts: int
+
+    def __post_init__(self) -> None:
+        if type(self.start_ts) is not int or type(self.end_ts) is not int:
+            raise TypeError("coverage timestamps must be integer nanoseconds")
+        if self.end_ts <= self.start_ts:
+            raise ValueError("empty or reversed baseline coverage")
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,3 +373,92 @@ def closed_until(ts_ns: int) -> int:
     following = (local + timedelta(hours=4)).date() + timedelta(days=1)
     session = _calendar(following.year).date_to_session(following, direction="next").date()
     return _nanos(datetime.combine(session - timedelta(days=1), time(20), tzinfo=ET))
+
+
+_Key = tuple[str, str, str]
+
+
+def build_baseline(
+    bars: Iterable[MinuteBarRow],
+    *,
+    coverage: Iterable[BaselineCoverage],
+    as_of: date,
+    known_at: int,
+    provenance: str,
+    feed: str,
+    prior_sessions: int,
+) -> BaselineTable:
+    """The table of the ``prior_sessions`` latest sessions before ``as_of``, per symbol and segment.
+
+    Receipts and bars on a closed moment or a session from ``as_of`` on are skipped unchecked.
+    Each kept session gets its usable start, a point before and after each bar and its receipt's
+    end; dollar volume sums ``volume * vwap``. The first POST minute, which holds the closing
+    print, is left out, and a POST receipt may start at the close or one minute after it: the
+    reference's own choice, from no paper. Departure: ``prior_sessions`` is required (the
+    reference defaults it to 20), since a tunable value without a registry row has no default here.
+    """
+    if prior_sessions <= 0:
+        raise ValueError("prior_sessions must be positive")
+    spans: dict[_Key, tuple[int, int]] = {}
+    groups: dict[_Key, list[tuple[int, MinuteBarRow]]] = {}
+    for receipt in coverage:
+        segment, day, start_ns = segment_start(receipt.start_ts)
+        if segment is None or day >= as_of:
+            continue
+        if receipt.end_ts > known_at:
+            raise ValueError("baseline coverage not known at the supplied time")
+        if receipt.start_ts % MINUTE_NS or receipt.end_ts % MINUTE_NS:
+            raise ValueError("baseline coverage must be minute-aligned")
+        if segment_start(receipt.end_ts - 1) != (segment, day, start_ns):
+            raise ValueError("baseline coverage crosses a segment boundary")
+        first = 60 if segment.name == "POST" else 0
+        usable = start_ns + first * NS
+        if receipt.start_ts not in (start_ns, usable) or receipt.end_ts <= usable:
+            raise ValueError("baseline coverage must begin at the segment's usable start")
+        key = (receipt.symbol, segment.name, day.isoformat())
+        if key in spans:
+            raise ValueError("duplicate baseline coverage")
+        spans[key] = (first, (receipt.end_ts - start_ns) // NS)
+        groups[key] = []
+    for bar in bars:
+        segment, day, start_ns = segment_start(bar.ts_event)
+        if segment is None or day >= as_of:
+            continue
+        if bar.ts_event + MINUTE_NS > known_at:
+            raise ValueError("baseline contains a bar not known at the supplied time")
+        offset_ns = bar.ts_event - start_ns
+        if offset_ns % MINUTE_NS:
+            raise ValueError("baseline bars must be aligned to minute boundaries")
+        offset_s = offset_ns // NS
+        if segment.name == "POST" and offset_s == 0:
+            continue
+        key = (bar.symbol, segment.name, day.isoformat())
+        span = spans.get(key)
+        if span is None or not (span[0] <= offset_s and offset_s + 60 <= span[1]):
+            raise ValueError("vendor minute bar outside declared coverage")
+        if bar.volume < 0 or bar.vwap < 0 or bar.trade_count < 0:
+            raise ValueError("negative vendor minute-bar value")
+        groups[key].append((offset_s, bar))
+    days: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for symbol, name, day_iso in groups:
+        days[symbol, name].append(day_iso)
+    samples: list[BaselineSample] = []
+    for key in sorted(groups):
+        symbol, name, day_iso = key
+        if day_iso not in sorted(days[symbol, name])[-prior_sessions:]:
+            continue
+        first, end_s = spans[key]
+        dollar_volume = trade_count = ZERO
+        samples.append(BaselineSample(*key, first, dollar_volume, trade_count))
+        seen: set[int] = set()
+        for offset_s, bar in sorted(groups[key], key=lambda item: item[0]):
+            if offset_s in seen:
+                raise ValueError("duplicate vendor minute bar")
+            seen.add(offset_s)
+            samples.append(BaselineSample(*key, offset_s, dollar_volume, trade_count))
+            dollar_volume += bar.volume * bar.vwap
+            trade_count += bar.trade_count
+            samples.append(BaselineSample(*key, offset_s + 60, dollar_volume, trade_count))
+        samples.append(BaselineSample(*key, end_s, dollar_volume, trade_count))
+    unique = {(s.symbol, s.segment, s.session, s.offset_s): s for s in samples}
+    return BaselineTable(tuple(unique.values()), provenance + _PROVENANCE_SUFFIX, known_at, feed)
