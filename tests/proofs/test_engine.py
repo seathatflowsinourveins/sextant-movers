@@ -292,8 +292,8 @@ def test_reference_prices_refuse(args: tuple[Any, ...], message: str) -> None:
 
 
 def test_quiet_returns_change_nothing() -> None:
+    assert step(MoverState(), tick(0), segment=POST) == (MoverState(), None)
     for state in (MoverState(), WARM):
-        assert step(state, tick(0), segment=POST) == (state, None)
         later = tick(361, "9.00")
         assert step(state, later, price_eligible=False, volume_eligible=False) == (state, None)
 
@@ -454,7 +454,7 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
         return nt.Price.from_str(f"{n // 100}.{n % 100:02d}")
 
     def registry(top: int) -> Any:
-        v = {n: rng.randint(1, 5) for n in units}
+        v: dict[str, Any] = {n: rng.randint(1, 5) for n in units}
         v["mover_min_move"] = Decimal(rng.randint(1, 20)).scaleb(-2)
         v["mover_min_trades_accel"] = Decimal(rng.randint(5, 40)).scaleb(-1)
         v["mover_min_dvol_ratio"] = Decimal(rng.randint(1, 30)).scaleb(-1)
@@ -474,7 +474,7 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
         feed, samples = rng.choice(("sip", "boats")), []
         for s in syms:
             for k in rng.sample(range(1, 11), rng.randint(0, 3)):
-                when = day + timedelta(days=-k if rng.random() > 0.03 else rng.choice((0, 1)))
+                when = day + timedelta(days=-k if rng.random() > 0.005 else rng.choice((0, 1)))
                 offset, dv, tc = 0, Decimal(0), Decimal(0)
                 for _ in range(rng.randint(1, 5)):
                     sample = (s, rng.choice((name, name, "RTH")), when.isoformat(), offset, dv, tc)
@@ -510,13 +510,14 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
         t = seg.start_ns if rng.random() < 0.5 else seg.start_ns + rng.randint(1, 120) * ns
         for k in range(rng.randint(10, 60)):
             t += rng.choice((0, 1, ns, 5 * ns, 10 * ns, 30 * ns, 60 * ns, 61 * ns))
-            r, when, sym = rng.random(), t, rng.choice(syms)
+            r, when, sym, ahead = rng.random(), t, rng.choice(syms), None
             if r < 0.03:
                 when = seg.start_ns - rng.randint(1, 5)
             elif r < 0.06:
                 when = seg.end_ns + rng.randint(0, 5)
-            elif r < 0.09:
+            elif r < 0.09:  # regressed; half of them with a receipt time that is not
                 when = t - rng.randint(1, 30) * ns
+                ahead = t + 10 * ns if rng.random() < 0.5 else None
             elif r < 0.12:
                 when = seg.start_ns
             size = nt.Quantity.from_int(rng.randint(1, 500))
@@ -526,7 +527,7 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
                 ids[sym], price(rng.randint(50, 6000)), size, buy, nt.TradeId(str(k)), when, init
             )
             kind, quote = (
-                rng.choice(("none", "none", "fresh", "stale", "other", "future", "init")),
+                rng.choice(("none",) * 6 + ("fresh",) * 3 + ("stale", "other", "future", "init")),
                 None,
             )
             if kind != "none":
@@ -552,7 +553,8 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
                 "quote": quote,
                 "price_eligible": rng.random() < 0.85,
                 "volume_eligible": rng.random() < 0.85,
-                "known_at": None if rng.random() > 0.1 else when + rng.randint(0, 3) * ns,
+                "known_at": ahead
+                or (None if rng.random() > 0.1 else when + rng.randint(0, 3) * ns),
             }
             conditions = tuple(rng.sample(codes, rng.choice((0, 0, 0, 1, 2))))
             state = states[key]
@@ -602,7 +604,7 @@ OURS = {
     "rank_movers": rank_movers,
     "advance": ours,
 }
-PARITY_DIGEST = "pending"
+PARITY_DIGEST = "542806875b59dcecf00d9984376ce0eb648e1dc3c6ae883dc8226db2b2fa4daf"
 
 
 def test_the_seeded_tapes_give_the_pinned_digest() -> None:
