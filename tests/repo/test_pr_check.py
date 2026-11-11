@@ -149,23 +149,32 @@ def test_an_empty_body_file_still_fails_every_section() -> None:
         assert any(name in failure for failure in fails), name
 
 
-def test_a_lanes_change_without_a_lanes_authority_is_refused() -> None:
+def test_a_tradingview_change_without_its_authority_is_refused() -> None:
     fails = _local(
-        body=_body(sources="example/fork@v1 " + SHA),
+        body=_body(sources="example/fork@v1 " + SHA + " src/client.py:12 BUILD ON"),
         env={"LOCAL_PR_BODY_FILE": "body.md"},
-        created=("lanes/paper/README.md",),
+        created=("src/sextant_movers/tradingview/display.py",),
     )["fails"]
-    assert any("lanes" in failure and "authority" in failure.lower() for failure in fails)
+    assert any("tradingview" in failure and "authority" in failure.lower() for failure in fails)
 
 
-def test_a_lanes_change_with_its_authority_passes() -> None:
-    body = _body(sources="nautechsystems/nautilus_trader@v1 " + SHA)
+def test_a_tradingview_change_with_its_authority_passes() -> None:
+    body = _body(sources="tradingview/lightweight-charts@v1 " + SHA + " src/client.py:12 BUILD ON")
     result = _local(
         body=body,
         env={"LOCAL_PR_BODY_FILE": "body.md"},
-        created=("lanes/paper/README.md",),
+        created=("src/sextant_movers/tradingview/display.py",),
     )
     assert result["fails"] == []
+
+
+def test_a_local_src_change_without_mechanism_evidence_is_refused() -> None:
+    fails = _local(
+        body=_body(),
+        env={"LOCAL_PR_BODY_FILE": "body.md"},
+        created=("src/sextant_movers/contract.py",),
+    )["fails"]
+    assert any("path:line" in failure for failure in fails)
 
 
 def test_an_empty_section_is_refused_locally() -> None:
@@ -277,7 +286,8 @@ def test_the_script_refuses_when_the_pinned_danger_is_missing(tmp_path: Path) ->
     repo = _repo(tmp_path, danger=False)
     done = _run_pr_check(repo)
     assert done.returncode != 0
-    assert "deploy/wsl/setup.sh" in done.stderr
+    assert 'SETUP.md "Local tools"' in done.stderr
+    assert "deploy/wsl" not in done.stderr
 
 
 def test_the_script_refuses_a_danger_off_the_repository_pin(tmp_path: Path) -> None:
@@ -286,7 +296,8 @@ def test_the_script_refuses_a_danger_off_the_repository_pin(tmp_path: Path) -> N
     assert done.returncode != 0
     assert "13.9.0" in done.stderr
     assert "14.1.0" in done.stderr
-    assert "deploy/wsl/setup.sh" in done.stderr
+    assert 'SETUP.md "Local tools"' in done.stderr
+    assert "deploy/wsl" not in done.stderr
 
 
 def test_the_script_runs_the_pinned_local_mode_with_the_body_file(tmp_path: Path) -> None:
@@ -307,7 +318,7 @@ def test_the_script_refuses_a_review_window_over_the_limit(tmp_path: Path) -> No
     done = _run_pr_check(repo)
     assert done.returncode != 0
     assert "45000" in done.stderr
-    assert "#305" in done.stderr
+    assert "Split the PR" in done.stderr
 
 
 def test_the_script_refuses_a_window_with_no_commits(tmp_path: Path) -> None:
@@ -340,14 +351,17 @@ def test_the_raw_diff_limit_is_one_named_constant_with_its_measurement() -> None
     match = re.search(r"RAW_DIFF_LIMIT=(\d+)", assignments[0])
     assert match is not None
     assert match.group(1) == "45000"
-    assert "#305" in assignments[0]
     assert "git diff origin/main...HEAD" in assignments[0]
 
 
-def test_the_justfile_chains_the_check_before_the_push_and_keeps_104_lines() -> None:
+def test_the_script_cites_no_issue_of_another_repository() -> None:
+    assert re.search(r"#\d", (ROOT / "scripts" / "pr-check.sh").read_text()) is None
+
+
+def test_the_justfile_chains_the_check_before_the_push_and_keeps_43_lines() -> None:
     lines = (ROOT / "justfile").read_text().splitlines()
-    assert len(lines) == 104
-    assert lines[101] == '    bash scripts/pr-check.sh "{{body_file}}" && git push -u origin HEAD'
+    assert len(lines) == 43
+    assert lines[40] == '    bash scripts/pr-check.sh "{{body_file}}" && git push -u origin HEAD'
 
 
 def test_the_manifest_row_names_the_local_check_and_its_proofs() -> None:

@@ -4,7 +4,8 @@
 <!-- The docs/manifest.md row this PR adds or follows. -->
 
 ## Upstream references
-<!-- repo@tag + full SHA and path, or a docs page with its read date. A self-built mechanism says `none exists:` and where you looked. -->
+<!-- repo@tag + full SHA and path, or a docs page with its read date. A self-built mechanism says `none exists:` and where you looked.
+     For each mechanism used: file:line at the pinned commit, and one verdict, use as is, build on or keep ours. -->
 
 ## How verified
 <!-- The commands you ran and their results. -->

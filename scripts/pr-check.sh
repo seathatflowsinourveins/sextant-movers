@@ -3,7 +3,7 @@
 # review window's raw size. danger/danger-js@14.1.0 `72540533c4f99bad772ba303be0eb4af6eddbdc4`:
 # `source/commands/danger-local.ts` (no PR metadata; body absent), `source/platforms/LocalGit.ts`
 # (`danger.github` absent), `source/platforms/git/localGetDiff.ts` (three-dot review window);
-# `docs/tutorials/fast-feedback.html.md`, read 2026-11-10. Issue #306.
+# `docs/tutorials/fast-feedback.html.md`, read 2026-11-10.
 set -euo pipefail
 
 body_file="${1:-}"
@@ -20,14 +20,12 @@ cd "$repo_root"
 pin="$(node -p 'require("./.devcontainer/agents/package.json").dependencies.danger')"
 danger_path="$(command -v danger || true)"
 if [[ -z "$danger_path" ]]; then
-  echo "pr-check: danger ${pin} is not installed. Install the pinned agent runtimes with:" >&2
-  echo "  bash deploy/wsl/setup.sh" >&2
+  echo "pr-check: danger ${pin} is not installed. Install the pinned agent runtimes as SETUP.md \"Local tools\" describes." >&2
   exit 1
 fi
 version="$("$danger_path" --version 2>/dev/null || true)"
 if [[ "$version" != "$pin" ]]; then
-  echo "pr-check: danger ${version:-unknown} is not the repository's pinned ${pin}. Install the pinned agent runtimes with:" >&2
-  echo "  bash deploy/wsl/setup.sh" >&2
+  echo "pr-check: danger ${version:-unknown} is not the repository's pinned ${pin}. Install the pinned agent runtimes as SETUP.md \"Local tools\" describes." >&2
   exit 1
 fi
 
@@ -43,11 +41,11 @@ LOCAL_PR_BODY_FILE="$body_file" "$danger_path" local \
   --base origin/main \
   --failOnErrors
 
-readonly RAW_DIFF_LIMIT=45000  # `git diff origin/main...HEAD | wc -c`; raised or removed by the PR that closes #305.
+readonly RAW_DIFF_LIMIT=45000  # `git diff origin/main...HEAD | wc -c`; Sextant's measured window, uncalibrated here.
 raw_chars="$(git diff origin/main...HEAD | wc -c)"
 raw_chars="${raw_chars//[[:space:]]/}"
 if (( raw_chars > RAW_DIFF_LIMIT )); then
-  echo "pr-check: the review window is ${raw_chars} raw characters, over the ${RAW_DIFF_LIMIT} limit. Split the PR; issue #305 raises or removes the limit in the PR that closes it." >&2
+  echo "pr-check: the review window is ${raw_chars} raw characters, over the ${RAW_DIFF_LIMIT} limit. Split the PR; raising the limit takes its own PR with a new measurement." >&2
   exit 1
 fi
 echo "pr-check: the Danger body rules and the ${RAW_DIFF_LIMIT}-character review window pass."
