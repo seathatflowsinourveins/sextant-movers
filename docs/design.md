@@ -74,6 +74,6 @@ No live shadow run is possible: one stream per account. A locally marked proof r
 ## What is not settled
 
 - **Saved baseline across a restart (open).** Today a restart costs a full baseline rebuild, during which the rank is unavailable. Part 6 answers whether a saved baseline lets a restart skip it, and under what freshness check. No mechanism is chosen.
-- **Landscape coverage (open until part 1).** `docs/landscape.md` gets one row per capability with its chosen repository, pin, licence, access path, runner-up and evaluation receipt; every candidate needs its evaluation before anything rests on it.
+- **Landscape coverage (done in part 1).** `docs/landscape.md` has one row per capability with its chosen repository, pin, licence, access path, runner-up and evaluation receipt, and `tests/repo/test_landscape.py` refuses a package no row names; every candidate still needs its evaluation before anything rests on it.
 - **Unverified, checked in the first parts:** whether the screener endpoint works on the current data plan; TradingView's own terms text for the MCP server; the licence of any streaming engine not yet read.
 - **Deletion in Sextant (the lead's decision).** About 25,000 lines leave Sextant. The deletion is the lead's decision and lands through Sextant's own gate; this repository only states its size.
