@@ -37,7 +37,7 @@ jobs:
           cap=$(sed -nE 's/.*\(ROOT \/ "src"\)\.rglob\("\*\.py"\)\) < ([0-9_]+)$/\1/p' tests/repo/test_budgets.py | tr -d _)
           [[ -n "$cap" ]] || { echo 'No src cap found in tests/repo/test_budgets.py.' >&2; exit 1; }
           week=$(git rev-list -1 --before='7 days ago' HEAD)
-          # Lines per src/sextant module at a commit, counted as test_budgets counts them.
+          # Lines per src/sextant_movers module at a commit, counted as test_budgets counts them.
           count() {
             git ls-tree -r --name-only "$1" -- src | grep '\.py$' | while read -r file; do
               module=$(cut -d/ -f3 <<< "$file"); [[ "$module" != *.py ]] || module='(top level)'
