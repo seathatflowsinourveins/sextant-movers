@@ -8,6 +8,7 @@ description = "Market movers ranking and its TradingView display, display only; 
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "exchange-calendars==4.13.2",
+    "nautilus-trader==2.0.0rc8",
     "pyarrow==26.0.0",
     "pyyaml==6.0.3",
 ]

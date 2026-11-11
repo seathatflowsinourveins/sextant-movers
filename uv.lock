@@ -114,6 +114,18 @@ wheels = [
 ]
 
 [[package]]
+name = "nautilus-trader"
+version = "2.0.0rc8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/b7/c66cfc72f660b1214b6724717af2f58f23cecfca6f03c78266890762a419/nautilus_trader-2.0.0rc8.tar.gz", hash = "sha256:b5a1caffbb3a2e1a4a1259a33ca2f058d2e703f6efe06780e63fd48b1a79e973", size = 13003547, upload-time = "2026-10-29T02:10:19.905Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/ad/316bdbbb0717d92259aa87e64a25ff11c196fc282239a8af0f552228d70f/nautilus_trader-2.0.0rc8-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5a27e015285f493cf4f5f9adb669452f4e20bde9d5ded3839da68e7e4bc80990", size = 63605696, upload-time = "2026-10-29T02:09:24.921Z" },
+    { url = "https://files.pythonhosted.org/packages/14/bc/705110bf78ccf1d1b22f63bdfdac96b6a7794fda3fda81e5dfa61a1b64ab/nautilus_trader-2.0.0rc8-cp313-cp313-manylinux_2_34_aarch64.whl", hash = "sha256:ddefb0d84ece4a7efe228f0115a8887f702449369a1c642267f4ca4022b2479d", size = 69445828, upload-time = "2026-10-29T02:09:32.086Z" },
+    { url = "https://files.pythonhosted.org/packages/57/e6/e8c78f9f36eccfda766d6a3b08d194dbdb837593e7a02c21aded1fd341cb/nautilus_trader-2.0.0rc8-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:c6cb90b69f2a0802f0c87ec14a328e1a467a05a206b13dad8f6ab8efec388b0f", size = 74016349, upload-time = "2026-10-29T02:09:39.474Z" },
+    { url = "https://files.pythonhosted.org/packages/15/fd/d4cf7ff6b7ab61ee5f0b6279fa9483afce5bcac52ea984fca386214b539b/nautilus_trader-2.0.0rc8-cp313-cp313-win_amd64.whl", hash = "sha256:08949c112bcd00f8ba68a091b634106f12f4d75922e421c3217347fe9ca10664", size = 68308781, upload-time = "2026-10-29T02:09:46.912Z" },
+]
+
+[[package]]
 name = "numpy"
 version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -321,6 +333,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "exchange-calendars" },
+    { name = "nautilus-trader" },
     { name = "pyarrow" },
     { name = "pyyaml" },
 ]
@@ -341,6 +354,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "exchange-calendars", specifier = "==4.13.2" },
+    { name = "nautilus-trader", specifier = "==2.0.0rc8" },
     { name = "pyarrow", specifier = "==26.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
 ]
