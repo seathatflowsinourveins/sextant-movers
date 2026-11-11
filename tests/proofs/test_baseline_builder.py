@@ -211,6 +211,9 @@ def test_median_of_three_sessions() -> None:  # ported
     value = table.cumulative("ZZZT", "PRE", 60)
     assert (value.dollar_volume, value.trade_count, value.sessions) == (40, 2, 3)
     assert table.window("ZZZT", "PRE", 60, 60).dollar_volume == 40
+    for offset, expected in ((0, 0), (30, 20), (120, 40), (19_800, 40)):  # to the receipt's end
+        assert table.cumulative("ZZZT", "PRE", offset).dollar_volume == expected
+    assert table.cumulative("ZZZT", "PRE", 19_801) is None
     assert table.provenance == "fixture XNYS bars" + baseline._PROVENANCE_SUFFIX
     assert baseline._PROVENANCE_SUFFIX == (
         "; v*vw, n; explicit complete coverage; linear within minute; first POST minute omitted"
