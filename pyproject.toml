@@ -7,6 +7,7 @@ version = "0.1.0"
 description = "Market movers ranking and its TradingView display, display only; installed by Sextant at a pinned commit"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "exchange-calendars==4.13.2",
     "pyyaml==6.0.3",
 ]
 
