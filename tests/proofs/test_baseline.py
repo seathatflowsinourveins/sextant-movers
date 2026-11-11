@@ -275,7 +275,6 @@ FLOAT: Any = 1.5
         (lambda: BaselineSample("Z", "PRE", "x", 0, FLOAT, D(0)), TypeError, NOT_DECIMAL),
         (lambda: sample("10-22", 0, "NaN"), ValueError, "invalid baseline value"),
         (lambda: sample("10-22", 0, "0", "-1"), ValueError, "invalid baseline value"),
-        (lambda: table(feed="iex"), ValueError, FEED),
         (lambda: BaselineTable((), "", 7, "sip"), ValueError, FEED),
         (lambda: table(sample("10-22", 0, "1"), sample("10-22", 0, "1")), ValueError, TWICE),
         (lambda: table(sample("10-22", 0, "2"), sample("10-22", 60, "1")), ValueError, DOWN),
@@ -286,6 +285,12 @@ def test_construction_refuses(make: Any, error: type[Exception], message: str) -
     with pytest.raises(error) as caught:
         make()
     assert type(caught.value) is error and str(caught.value) == message
+
+
+@pytest.mark.parametrize("feed", ["iex", "delayed_sip", "otc", "overnight", "SIP", "sip ", ""])
+def test_a_table_names_only_the_sip_or_boats_feed(feed: str) -> None:
+    with pytest.raises(ValueError, match=r"^baseline source and feed required$"):
+        table(feed=feed)
 
 
 def test_identity_covers_every_field_and_not_the_input_order() -> None:

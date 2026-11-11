@@ -14,8 +14,10 @@ Sources: gerrymanoim/exchange_calendars@4.13.2 dbe38b1f6887434bbdd1a7d2df6ff8f17
 (`get_calendar` calendar_utils.py:237; `session_open`, `session_close`, `date_to_session`
 exchange_calendar.py:1006, 1012, 1281); nautechsystems/nautilus_trader@v2.0.0rc8
 d53849b216e20f2c122ca01b4dd0da377638b186 (`dt_to_unix_nanos`,
-python/nautilus_trader/core/datetime.py:81-104). Behaviour, value for value and refusal for
-refusal: the reference, `src/sextant/ranking/baseline.py` at
+python/nautilus_trader/core/datetime.py:81-104); the two feeds a table may name,
+alpacahq/alpaca-py@v0.44.0 cc4cb3b7ba50ae250e621983c2779047fb16bb28 (`alpaca/data/enums.py:69`
+`SIP = "sip"`, `:72` `BOATS = "boats"`; cited, never imported). Behaviour, value for value and
+refusal for refusal: the reference, `src/sextant/ranking/baseline.py` at
 06562bec0898a7203f4eaf69086ced83d2477e6b, and its `Segment` (`src/sextant/ranking/engine.py:24-36`).
 Departure: `Segment` is defined here, so the engine imports it from this module; the reference's
 baseline imports it back from its engine through a delayed import, a cycle.
