@@ -41,7 +41,11 @@ SYMBOLS = ("ZZHBA", "ZZHBB", "ZZHBC")
 
 
 def made(
-    m: Any, known_at: int, symbols: tuple[str, ...] = ("ZZHBA", "ZZHBB", "ZZHBC"), **coverage: Any
+    m: Any,
+    known_at: int,
+    symbols: tuple[str, ...] = ("ZZHBA", "ZZHBB", "ZZHBC"),
+    /,
+    **coverage: Any,
 ) -> Any:
     """An eligible generation at `known_at` unless `coverage` changes it; children run this."""
     from datetime import date
@@ -331,7 +335,8 @@ def answer_all(hb: Any, pub: Any, g: Any, reg: Any) -> dict[str, Any]:
             for name, (kind, unit) in reg.ROWS.items()
         )
     )
-    reading, clock_calls = [0], [0]
+    reading: list[Any] = [0]
+    clock_calls = [0]
 
     def clock() -> Any:
         clock_calls[0] += 1
