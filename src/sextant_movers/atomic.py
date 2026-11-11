@@ -2,8 +2,10 @@
 
 The value is written as sorted JSON to a temporary file in the target's own directory, flushed
 and synced, renamed over the target, and the directory is synced so the rename survives a crash.
-On any failure the temporary file is removed and the target keeps its old content. The file has
-`mkstemp`'s mode, readable and writable only by its owner.
+On a failure before the rename the temporary file is removed and the target keeps its old content.
+A failure after the rename (opening or syncing the directory) raises while the target already
+holds the new content whole; what is then unknown is only whether the rename survives a crash.
+The file has `mkstemp`'s mode, readable and writable only by its owner.
 
 Source: the CPython 3.13 standard library, read 2026-11-11:
 https://docs.python.org/3.13/library/tempfile.html (`mkstemp`: no race in the file's creation; the
