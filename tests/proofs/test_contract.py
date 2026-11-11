@@ -12,10 +12,18 @@ import sys
 from pathlib import Path
 
 import sextant_movers.contract as contract
-from sextant_movers.ranking import registry
+from sextant_movers.ranking import baseline, registry, window
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILT = {"Registry": registry.Registry, "RegistryRow": registry.RegistryRow}
+BUILT = {
+    "BaselineTable": baseline.BaselineTable,
+    "NS": window.NS,
+    "Registry": registry.Registry,
+    "RegistryRow": registry.RegistryRow,
+    "Segment": baseline.Segment,
+    "TradeWindow": window.TradeWindow,
+    "segment_start": baseline.segment_start,
+}
 
 
 def _designed() -> set[str]:
@@ -54,11 +62,12 @@ def test_a_star_import_binds_the_exported_names_only() -> None:
 def test_importing_the_contract_never_loads_sextant() -> None:
     script = (
         "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
         "import sextant_movers.contract\n"
         "tops = {name.partition('.')[0] for name in sys.modules}\n"
         "print('sextant' in tops)\n"
     )
-    done = subprocess.run(
-        [sys.executable, "-I", "-c", script], capture_output=True, text=True, check=True
-    )
+    # `-I` drops PYTHONPATH and the working directory, so the child is handed the source root.
+    cmd = [sys.executable, "-I", "-c", script, str(ROOT / "src")]
+    done = subprocess.run(cmd, capture_output=True, text=True, check=True)
     assert done.stdout.strip() == "False"
