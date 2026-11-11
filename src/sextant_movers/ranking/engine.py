@@ -1,21 +1,17 @@
 """The score engine: one pure transition per trade, and the order of the rows it computes.
 
-A row's score is its move from the prior close times its dollar volume over the time-matched
-baseline; the gates and the acceleration are reported beside it, and every unknown input is named
-in `unknown_reasons`, never filled. Session boundaries, closes and baseline curves are inputs,
-never inferred here. Behaviour, value for value and refusal for refusal: the reference,
-`src/sextant/ranking/engine.py` at `06562bec0898a7203f4eaf69086ced83d2477e6b`. The ticks are
-nautechsystems/nautilus_trader v2.0.0rc8 `d53849b216e20f2c122ca01b4dd0da377638b186` `TradeTick`
-and `QuoteTick` (`python/nautilus_trader/model/__init__.pyi:7035-7044`, `:6365`); the engine ships
-no mover score. The two feeds are alpacahq/alpaca-py v0.44.0
-`cc4cb3b7ba50ae250e621983c2779047fb16bb28` `alpaca/data/enums.py:69,72` (cited, never imported).
+Score: move from the prior close times dollar volume over the time-matched baseline; gates and
+acceleration sit beside it, and each unknown input is named in `unknown_reasons`, never filled.
+Behaviour, value for value and refusal for refusal: the reference, `src/sextant/ranking/engine.py`
+at `06562bec0898a7203f4eaf69086ced83d2477e6b`. Ticks: nautechsystems/nautilus_trader v2.0.0rc8
+`d53849b216e20f2c122ca01b4dd0da377638b186` (`python/nautilus_trader/model/__init__.pyi:7035-7044`,
+`:6365`). Feeds: alpacahq/alpaca-py v0.44.0 `cc4cb3b7ba50ae250e621983c2779047fb16bb28`
+`alpaca/data/enums.py:69,72`, cited, never imported.
 
-Departures: `Segment` is imported from `ranking.baseline`. No sale-condition literal and no
-`conditions` parameter: the caller decides `price_eligible` and `volume_eligible`, and a trade the
-reference skips for its closing-print codes is a call with both false, which returns at the same
-point. Kept from the reference, each pinned by a test: a trade at a POST start returns quietly
-before the receipt checks; only a trade at exactly `start_ns` covers the segment prefix; a quote
-older than the one held replaces it.
+Departures: `Segment` comes from `ranking.baseline`; no sale-condition literal and no `conditions`
+parameter, so a trade the reference skips by code is a call with both eligibility flags false.
+Kept, each pinned by a test: a POST-start trade is quiet before the receipt checks; only a trade
+at exactly `start_ns` covers the prefix; an older quote replaces the one held.
 """
 
 from collections.abc import Iterable, Mapping
@@ -29,17 +25,6 @@ from nautilus_trader.model import QuoteTick, TradeTick
 from sextant_movers.ranking.baseline import BaselineTable, Segment
 from sextant_movers.ranking.registry import Registry
 from sextant_movers.ranking.window import NS, TradeWindow
-
-__all__ = [
-    "GATES",
-    "MoverRow",
-    "MoverState",
-    "ReferencePrices",
-    "Segment",
-    "advance_mover",
-    "qualifies",
-    "rank_movers",
-]
 
 ZERO = Decimal(0)
 GATES = ("mover_min_move", "move_1m_positive", "mover_min_trades_accel", "mover_min_dvol_ratio")
@@ -166,8 +151,7 @@ def advance_mover(
 ) -> tuple[MoverState, MoverRow | None]:
     """The new state and row after `tick`, or `(state, None)` for a trade that counts nowhere.
 
-    Price and volume histories take the trade by their own flag. A state attached after the
-    segment start has no verified prefix, so its dollar-volume ratio stays unknown.
+    Each history takes the trade by its own flag; a state attached late never covers the prefix.
     """
     symbol = str(tick.instrument_id.symbol)
     now = max(tick.ts_event, tick.ts_init, known_at or 0)
@@ -229,14 +213,8 @@ def advance_mover(
         ratio is not None and ratio >= registry.mover_min_dvol_ratio,
     )
     opened = references.regular_open
-    from_open = (
-        price / opened - 1
-        if price is not None
-        and opened
-        and references.open_ts is not None
-        and ts >= references.open_ts
-        else None
-    )
+    open_known = references.open_ts is not None and ts >= references.open_ts
+    from_open = price / opened - 1 if price is not None and opened and open_known else None
     spread = held.ask_price.as_decimal() - held.bid_price.as_decimal() if held else None
     observations = {
         "price": price,
@@ -258,20 +236,11 @@ def advance_mover(
         "uncalibrated": True,
         "unknown_reasons": tuple(reason for reason, unknown in missing.items() if unknown),
     }
-    row = MoverRow(
-        symbol,
-        now,
-        move * ratio if move is not None and ratio is not None else None,
-        None,
-        move,
-        move_1m,
-        move_5m,
-        ratio,
-        accel,
-        tuple(gate for gate, ok in zip(GATES, passed, strict=True) if ok),
-        observations,
-        registry.params_hash,
-    )
+    score = move * ratio if move is not None and ratio is not None else None
+    gates = tuple(gate for gate, ok in zip(GATES, passed, strict=True) if ok)
     params = registry.params_hash
+    row = MoverRow(
+        symbol, now, score, None, move, move_1m, move_5m, ratio, accel, gates, observations, params
+    )
     new = MoverState(symbol, key, history, volumes, dv, row, held, now, covered, params)
     return new, row

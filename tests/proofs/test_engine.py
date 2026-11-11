@@ -1,11 +1,9 @@
-"""Part 4d: the score engine, a pure per-trade transition, and the ranking order.
+"""Part 4d: the score engine and the ranking order, on synthetic symbols, prices and dates only.
 
-Synthetic symbols, prices, sizes and dates only. The reference is `src/sextant/ranking/engine.py`
-at `06562bec0898a7203f4eaf69086ced83d2477e6b`; this process never imports it. Seven of its eight
-engine cases (`tests/proofs/test_ranking.py` at that commit) drive a publisher this repository has
-not built; they are rewritten here as direct calls, each named `test_ref_*`. The eighth, the
-time-matched baseline median, is already a direct call and is ported in `test_baseline.py`. The
-`local` proof runs the reference in a child interpreter, as `tests/proofs/test_baseline.py` does.
+The reference is `src/sextant/ranking/engine.py` at `06562bec0898a7203f4eaf69086ced83d2477e6b`;
+this process never imports it. Its engine cases (`tests/proofs/test_ranking.py` there) are the
+`test_ref_*` direct calls; the time-matched median is ported in `test_baseline.py`. The `local`
+proof runs the reference in a child interpreter.
 """
 
 import ast
@@ -107,9 +105,11 @@ def tick(second: int, price: str = "2.00", name: str = "ZZZT", *, ns: int = 0) -
     )
 
 
-def quote(at: int, name: str = "ZZZT", *, bid: str = "1.99", ask: str = "2.01") -> QuoteTick:
+def quote(
+    at: int, name: str = "ZZZT", *, bid: str = "1.99", ask: str = "2.01", init: int = 0
+) -> QuoteTick:
     iid, size = InstrumentId.from_str(name + ".SIM"), Quantity.from_int(1)
-    return QuoteTick(iid, Price.from_str(bid), Price.from_str(ask), size, size, at, at)
+    return QuoteTick(iid, Price.from_str(bid), Price.from_str(ask), size, size, at, init or at)
 
 
 def step(state: MoverState, t: TradeTick, **kw: Any) -> tuple[MoverState, Any]:
@@ -136,12 +136,8 @@ WARM, WARM_ROW = run(*warm())
 def test_ref_per_trade_score_uses_its_own_normal() -> None:
     # $120 + $132 against a $300 time-matched normal; move 10%; 6 trades a minute against 1.
     row = WARM_ROW
-    assert (row.move, row.dvol_ratio, row.score, row.trades_accel) == (
-        D("0.1"),
-        D("0.84"),
-        D("0.084"),
-        D(6),
-    )
+    found = (row.move, row.dvol_ratio, row.score, row.trades_accel)
+    assert found == (D("0.1"), D("0.84"), D("0.084"), D(6))
     assert row.move_1m == row.move_5m == D("0.1") and row.observations["price"] == D("2.20")
     assert row.gates_passed == GATES and qualifies(row) and row.observations["uncalibrated"]
     assert row.observations["unknown_reasons"] == () and row.params_hash == REG.params_hash
@@ -160,12 +156,8 @@ def test_ref_rank_is_deterministic_and_leaves_out_null_scores() -> None:
             replace(WARM_ROW, symbol="ZZZY", score=D("0.09")),
         )
     )
-    assert [(r.symbol, r.rank) for r in rows] == [
-        ("ZZZY", 1),
-        ("ZZZA", 2),
-        ("ZZZB", 3),
-        ("ZZZZ", 4),
-    ]
+    order = [(r.symbol, r.rank) for r in rows]
+    assert order == [("ZZZY", 1), ("ZZZA", 2), ("ZZZB", 3), ("ZZZZ", 4)]
     failing = replace(WARM_ROW, gates_passed=GATES[:3])
     assert rank_movers([failing])[0].rank == 1 and not qualifies(failing)
 
@@ -183,10 +175,8 @@ def test_ref_missing_inputs_never_manufacture_a_score(missing: str) -> None:
 
 def test_ref_price_and_volume_flags_and_a_future_reference() -> None:
     initial, _ = run(tick(0))
-    assert step(initial, tick(10, "9.00"), price_eligible=False, volume_eligible=False) == (
-        initial,
-        None,
-    )
+    quiet = step(initial, tick(10, "9.00"), price_eligible=False, volume_eligible=False)
+    assert quiet == (initial, None)
     state, row = step(initial, tick(20, "9.00"), price_eligible=False)
     assert row.observations["price"] == D("2.00") and row.observations["dollar_volume"] == D(110)
     _, row = step(state, tick(30, "2.40"), volume_eligible=False)
@@ -214,55 +204,29 @@ def test_ref_changed_parameters_and_current_baseline_cannot_reuse_history() -> N
         step(WARM, tick(361), base=table(session=DAY.isoformat()))
 
 
+FEED, SPLICE = "baseline feed mismatch", "source/session changed; create a fresh publisher"
+OUTSIDE, SYMBOL = "trade outside supplied session", "one MoverState per symbol"
+PARAMS, QUOTE_SYMBOL = "parameters changed; create fresh history", "quote symbol mismatch"
+LATE_QUOTE, LATER, AHEAD = "future quote", START + 361 * NS, START + 900 * NS
 REFUSALS: dict[str, tuple[Any, str]] = {
-    "baseline feed": (
-        lambda: step(WARM, tick(361), base=table(feed="boats")),
-        "baseline feed mismatch",
-    ),
-    "feed name": (lambda: step(WARM, tick(361), feed="iex"), "baseline feed mismatch"),
-    "feed change": (
-        lambda: step(WARM, tick(361), feed="boats", base=table(feed="boats")),
-        "source/session changed; create a fresh publisher",
-    ),
-    "segment": (
-        lambda: step(WARM, tick(361), segment=replace(SCOPE, source="other")),
-        "source/session changed; create a fresh publisher",
-    ),
-    "symbol": (lambda: step(WARM, tick(361, name="ZZZU")), "one MoverState per symbol"),
-    "parameters": (
-        lambda: step(WARM, tick(361), registry=registry(top_n=3)),
-        "parameters changed; create fresh history",
-    ),
-    "before": (lambda: run(tick(0, ns=-1)), "trade outside supplied session"),
-    "at end": (lambda: run(tick(19_800)), "trade outside supplied session"),
+    "baseline feed": (lambda: step(WARM, tick(361), base=table(feed="boats")), FEED),
+    "feed name": (lambda: step(WARM, tick(361), feed="iex"), FEED),
+    "feed change": (lambda: step(WARM, tick(361), feed="boats", base=table(feed="boats")), SPLICE),
+    "segment": (lambda: step(WARM, tick(361), segment=replace(SCOPE, source="x")), SPLICE),
+    "symbol": (lambda: step(WARM, tick(361, name="ZZZU")), SYMBOL),
+    "parameters": (lambda: step(WARM, tick(361), registry=registry(top_n=3)), PARAMS),
+    "before": (lambda: run(tick(0, ns=-1)), OUTSIDE),
+    "at end": (lambda: run(tick(19_800)), OUTSIDE),
     "regressed": (lambda: step(WARM, tick(300)), FUTURE),
-    "known_at": (
-        lambda: step(step(WARM, tick(361), known_at=START + 900 * NS)[0], tick(362)),
-        FUTURE,
-    ),
+    "known_at": (lambda: step(step(WARM, tick(361), known_at=AHEAD)[0], tick(362)), FUTURE),
     "reference": (lambda: run(tick(0), refs=ReferencePrices(D(2), START + 1, "x")), FUTURE),
     "baseline": (lambda: run(tick(0), base=table(known_at=START + 1)), FUTURE),
     "current": (lambda: run(tick(0), base=table(session=DAY.isoformat())), BASELINE_SESSION),
     "future": (lambda: run(tick(0), base=table(session=str(DAY + timedelta(1)))), BASELINE_SESSION),
-    "quote symbol": (
-        lambda: step(WARM, tick(361), quote=quote(START, "ZZZU")),
-        "quote symbol mismatch",
-    ),
-    "quote event": (
-        lambda: step(WARM, tick(361), quote=quote(START + 361 * NS + 1)),
-        "future quote",
-    ),
-    "quote init": (
-        lambda: step(WARM, tick(361), quote=replace_init(quote(START), START + 362 * NS)),
-        "future quote",
-    ),
+    "quote symbol": (lambda: step(WARM, tick(361), quote=quote(START, "ZZZU")), QUOTE_SYMBOL),
+    "quote event": (lambda: step(WARM, tick(361), quote=quote(LATER + 1)), LATE_QUOTE),
+    "quote init": (lambda: step(WARM, tick(361), quote=quote(START, init=LATER + 1)), LATE_QUOTE),
 }
-
-
-def replace_init(q: QuoteTick, ts_init: int) -> QuoteTick:
-    return QuoteTick(
-        q.instrument_id, q.bid_price, q.ask_price, q.bid_size, q.ask_size, q.ts_event, ts_init
-    )
 
 
 @pytest.mark.parametrize("case", REFUSALS)
@@ -306,8 +270,7 @@ def test_a_quiet_post_start_runs_before_the_receipt_checks() -> None:
 
 def test_a_trade_at_the_start_covers_the_prefix_and_a_late_one_never_does() -> None:
     assert WARM.segment_covered and WARM_ROW.observations["segment_total_covered"]
-    # Kept from the reference: only a trade at exactly `start_ns` covers the prefix, so a state that
-    # was attached before the first trade still leaves the ratio unknown for the whole segment.
+    # Kept from the reference: only a trade at exactly `start_ns` covers the prefix.
     late, row = run(tick(0, ns=1), tick(360, "2.40"))
     assert row.dvol_ratio is None and row.score is None and not late.segment_covered
     assert row.observations["dollar_volume"] is None
@@ -335,28 +298,16 @@ def test_move_from_open_needs_the_open_time() -> None:
     assert after.observations["move_from_open"] == D("0.1")
 
 
-EARLY = (
-    "price_1m_unknown",
-    "price_5m_unknown",
-    "prior_window_uncovered",
-    "baseline_zero_dollar_volume",
-)
+EARLY = ("price_1m_unknown", "price_5m_unknown", "prior_window_uncovered")
+EARLY += ("baseline_zero_dollar_volume",)
 
 
 @pytest.mark.parametrize(
     ("ticks", "kw", "reasons"),
     [
-        (
-            (tick(0),),
-            {},
-            EARLY,
-        ),
+        ((tick(0),), {}, EARLY),
         (warm(), {"refs": ReferencePrices(None, START - NS, "x")}, ("reference_unknown",)),
-        (
-            (tick(0),),
-            {"price_eligible": False},
-            ("price_unknown", *EARLY),
-        ),
+        ((tick(0),), {"price_eligible": False}, ("price_unknown", *EARLY)),
         ((tick(0), tick(400)), {}, ("prior_window_zero_trades",)),
         (warm(), {"base": table(symbols=("ZZZU",))}, ("baseline_unknown",)),
         ((tick(0), tick(601)), {}, ("prior_window_zero_trades", "baseline_unknown")),
@@ -377,11 +328,9 @@ def test_each_unknown_reason(ticks: tuple[TradeTick, ...], kw: Any, reasons: tup
     ],
 )
 def test_each_gate_on_its_exact_threshold(name: str, exact: Decimal, above: Decimal) -> None:
-    gate = name  # the three threshold gates are named after their rows
-    assert (
-        gate in GATES and gate in run(*warm(), registry=registry(**{name: exact}))[1].gates_passed
-    )
-    assert gate not in run(*warm(), registry=registry(**{name: above}))[1].gates_passed
+    assert name in GATES  # the three threshold gates are named after their rows
+    assert name in run(*warm(), registry=registry(**{name: exact}))[1].gates_passed
+    assert name not in run(*warm(), registry=registry(**{name: above}))[1].gates_passed
 
 
 def test_the_one_minute_gate_needs_a_rise() -> None:
@@ -411,9 +360,8 @@ def test_no_sale_condition_literal_and_no_conditions_parameter() -> None:
         for a in n.names
     }
     allowed = {"collections.abc", "dataclasses", "decimal", "types", "typing"}
-    allowed |= {"nautilus_trader.model"} | {
-        f"sextant_movers.ranking.{m}" for m in ("baseline", "registry", "window")
-    }
+    allowed |= {"nautilus_trader.model", "sextant_movers.ranking.baseline"}
+    allowed |= {"sextant_movers.ranking.registry", "sextant_movers.ranking.window"}
     assert imports <= allowed, imports - allowed
 
 
@@ -449,6 +397,7 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
     spans += (("OVERNIGHT", 1, 9),)
     units = dict(zip(m["names"], m["units"], strict=True))
     codes = ("6", "M", "9", "G", "U", "Z", "@", "F", "T", "I")
+    quote_kinds = ("none",) * 6 + ("fresh",) * 3 + ("stale", "other", "future", "init")
 
     def price(n: int) -> Any:
         return nt.Price.from_str(f"{n // 100}.{n % 100:02d}")
@@ -522,14 +471,9 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
                 when = seg.start_ns
             size = nt.Quantity.from_int(rng.randint(1, 500))
             init = when + rng.choice((0, 0, 1, 1000))
-            buy = nt.AggressorSide.BUY
-            tick = nt.TradeTick(
-                ids[sym], price(rng.randint(50, 6000)), size, buy, nt.TradeId(str(k)), when, init
-            )
-            kind, quote = (
-                rng.choice(("none",) * 6 + ("fresh",) * 3 + ("stale", "other", "future", "init")),
-                None,
-            )
+            buy, px = nt.AggressorSide.BUY, price(rng.randint(50, 6000))
+            tick = nt.TradeTick(ids[sym], px, size, buy, nt.TradeId(str(k)), when, init)
+            kind, quote = rng.choice(quote_kinds), None
             if kind != "none":
                 bid = rng.randint(50, 6000)
                 q_at = {
@@ -584,8 +528,7 @@ def tape_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
 
 
 def ours(state: Any, tick: Any, refs: Any, table: Any, conditions: Any, **kw: Any) -> Any:
-    # "6", "M" and "9" are the reference's closing-print codes, its test input, never a value of
-    # this package: a trade the reference skips for them is, here, a call with both flags false.
+    # The reference's closing-print codes are its test input, never a value of this package.
     if {"6", "M", "9"} & set(conditions):
         kw.update(price_eligible=False, volume_eligible=False)
     return advance_mover(state, tick, refs, table, **kw)
@@ -648,17 +591,9 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     blob = (Path(src) / "sextant" / "ranking" / "engine.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
-    script = (
-        PRELUDE + "".join(inspect.getsource(f) for f in (shown, row_shown, tape_answers)) + CHILD
-    )
-    done = subprocess.run(
-        [python, "-I", "-c", script],
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=True,
-    )
+    helpers = "".join(inspect.getsource(f) for f in (shown, row_shown, tape_answers))
+    cmd, env = [python, "-I", "-c", PRELUDE + helpers + CHILD], {"MOVERS_REFERENCE_SRC": src}
+    done = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=900, check=True)
     line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
     theirs = json.loads(line.removeprefix("PARITY "))
     mine = tape_answers(OURS, nt)
