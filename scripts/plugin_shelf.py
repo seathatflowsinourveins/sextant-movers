@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""Install the session shelf for this checkout, or check that it is installed.
+"""Install the session shelf from the main checkout, or check that it is installed.
 
-`.claude/settings.json` declares the shelf: `extraKnownMarketplaces` names the
-marketplaces and `enabledPlugins` the plugins. Declaring is not installing:
-"Committing that entry turns the plugin on for your collaborators but doesn't
-download it to their machines. Each collaborator also runs `claude plugin install
-<name>@<marketplace> --scope project` once per clone"
-(code.claude.com/docs/en/plugins/install.md, "Choose an install scope", read
-2026-11-11). So `--install` calls the vendor's two commands, `claude plugin
-marketplace add <source> --scope project` per marketplace and `claude plugin install
-<id> --scope project` per enabled id, read from that file alone; both report a
-repeat as success with exit 0 (code.claude.com/docs/en/plugins/cli-reference.md,
-"plugin install" and "plugin marketplace add", read 2026-11-11; Claude Code 2.1.322
-`--help`). `--check` reads `claude plugin list --json` and asks one question: does
-every enabled id have an install record whose `projectPath` is this checkout, or
-whose scope covers every path?
+Built on the origin repository's `deploy/wsl/shelf.sh` and `scripts/runtime_doctor.py`
+at 7252b0f5c7ccdb416356aaddd9b53fa9a33bd405: marketplaces at scope user, plugins at
+scope local, from the main checkout. Sources and measurements: docs/manifest.md,
+"Shelf install step and its session-start check".
 """
 
 from __future__ import annotations
@@ -27,11 +17,66 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCOPE = "project"
-EVERY_PATH = {"user", "managed"}
 FIX = "python3 scripts/plugin_shelf.py --install </dev/null"
+LOCAL = ".claude/settings.local.json"
+USER, LOCAL_SCOPE = ("--scope", "user"), ("--scope", "local")
 SOURCE_KEYS = {"github": {"repo", "ref"}, "git": {"url", "ref"}, "directory": {"path"}}
 USAGE = "usage: plugin_shelf.py {--install | --check}"
+REMEDY = (
+    "the CLI's remedy: to use this source instead, remove that marketplace first with "
+    "`claude plugin marketplace remove {}` (it uninstalls its plugins), then run this again"
+)
+
+
+class Stop(Exception):
+    """One line for stderr, then exit 1."""
+
+
+def run(command: list[str], cwd: Path, show: bool = False) -> str:
+    """Run a command without a prompt; `show` lets the CLI's own lines through."""
+    shown = " ".join(command)
+    try:
+        done = subprocess.run(
+            command,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=not show,
+            text=True,
+            timeout=None if show else 60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise Stop(f"`{shown}` ran past 60 seconds") from None
+    except OSError as error:
+        raise Stop(f"`{shown}` did not start: {error.strerror}") from None
+    if done.returncode != 0:
+        raise Stop(f"`{shown}` exited {done.returncode}")
+    return done.stdout or ""
+
+
+def rows(command: list[str], cwd: Path) -> list[dict]:
+    try:
+        answer = json.loads(run(command, cwd))
+    except json.JSONDecodeError:
+        answer = None
+    if not isinstance(answer, list) or not all(isinstance(row, dict) for row in answer):
+        raise Stop(f"`{' '.join(command)}` did not answer a JSON array of objects")
+    return answer
+
+
+def main_checkout() -> Path:
+    first = run(["git", "worktree", "list", "--porcelain"], ROOT).partition("\n")[0]
+    if not first.startswith("worktree "):
+        raise Stop("`git worktree list --porcelain` did not start with a worktree line")
+    return Path(first.removeprefix("worktree ")).resolve()
+
+
+def settings(checkout: Path) -> dict:
+    return json.loads((checkout / ".claude/settings.json").read_text())
+
+
+def enabled(declared: dict) -> list[str]:
+    return [plugin for plugin, on in declared.get("enabledPlugins", {}).items() if on is True]
 
 
 def source_argument(source: dict) -> str:
@@ -46,90 +91,73 @@ def source_argument(source: dict) -> str:
     return base + "#" + source["ref"] if source.get("ref") else base
 
 
-def commands(root: Path = ROOT) -> list[list[str]]:
-    """Every vendor command the install runs, in order, from the settings file."""
-    settings = json.loads((root / ".claude/settings.json").read_text())
+def commands(declared: dict) -> list[list[str]]:
+    """Every vendor command the install runs, in order."""
+    marketplaces = declared.get("extraKnownMarketplaces", {}).values()
     adds = [
-        [
-            "claude",
-            "plugin",
-            "marketplace",
-            "add",
-            source_argument(entry["source"]),
-            "--scope",
-            SCOPE,
-        ]
-        for entry in settings.get("extraKnownMarketplaces", {}).values()
+        ["claude", "plugin", "marketplace", "add", source_argument(entry["source"]), *USER]
+        for entry in marketplaces
     ]
-    installs = [
-        ["claude", "plugin", "install", plugin, "--scope", SCOPE]
-        for plugin, on in settings.get("enabledPlugins", {}).items()
-        if on is True
-    ]
-    return adds + installs
+    return adds + [["claude", "plugin", "install", id, *LOCAL_SCOPE] for id in enabled(declared)]
 
 
-def missing(records: list[dict], root: Path = ROOT) -> list[str]:
-    """Enabled ids with no install record for this checkout."""
-    settings = json.loads((root / ".claude/settings.json").read_text())
-    here = os.path.realpath(root)
-    installed = {
-        record.get("id")
-        for record in records
-        if record.get("scope") in EVERY_PATH
-        or os.path.realpath(record.get("projectPath") or "/nonexistent") == here
-    }
-    return [
-        plugin
-        for plugin, on in settings.get("enabledPlugins", {}).items()
-        if on is True and plugin not in installed
-    ]
+def collision(declared: dict, registered: list[dict], main: Path) -> str | None:
+    """A registry entry the adds would miss or re-point; it is never changed here."""
+    for name, entry in declared.get("extraKnownMarketplaces", {}).items():
+        if entry["source"].get("source") != "directory":
+            continue
+        ours = os.path.realpath(main / entry["source"]["path"])
+        for row in registered:
+            other, path = row.get("name"), row.get("path") or row.get("repo") or row.get("url")
+            same = row.get("source") == "directory" and os.path.realpath(str(path)) == ours
+            if same and other != name:
+                why = f"{ours} is registered as marketplace '{other}', not '{name}'"
+                return why + ", so the adds stop at 'already on disk'; " + REMEDY.format(other)
+            if other == name and not same:
+                why = f"marketplace '{name}' is registered from {path}, not from {ours}"
+                return why + ", and an add would re-point it; " + REMEDY.format(name)
+    return None
 
 
 def install() -> int:
-    for command in commands():
+    main = main_checkout()
+    declared = settings(main)
+    refused = collision(
+        declared, rows(["claude", "plugin", "marketplace", "list", "--json"], main), main
+    )
+    if refused:
+        raise Stop(refused)
+    try:
+        run(["git", "check-ignore", "-q", LOCAL], main)
+    except Stop:
+        raise Stop(f"git does not ignore {LOCAL} in {main}, which a local install writes") from None
+    tracked = run(["git", "diff", "HEAD", "--binary"], main)
+    for command in commands(declared):
         print("plugin_shelf: " + " ".join(command), flush=True)
-        done = subprocess.run(command, cwd=ROOT, stdin=subprocess.DEVNULL, check=False)
-        if done.returncode != 0:
-            print(
-                f"plugin_shelf: `{' '.join(command[1:3])}` exited {done.returncode}: "
-                + " ".join(command),
-                file=sys.stderr,
-            )
-            return 1
-    print(f"ok: {len(commands())} shelf commands ran for this checkout")
+        run(command, main, show=True)
+    if run(["git", "diff", "HEAD", "--binary"], main) != tracked:
+        raise Stop(f"a tracked file in {main} changed during the install; see `git diff`")
+    print(f"ok: the shelf is installed from {main}; no tracked file changed; {LOCAL} is ignored")
     return 0
 
 
 def check() -> int:
-    try:
-        listed = subprocess.run(
-            ["claude", "plugin", "list", "--json"],
-            cwd=ROOT,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        print("plugin_shelf: `claude plugin list --json` ran past 60 seconds", file=sys.stderr)
-        return 1
-    if listed.returncode != 0:
-        print(
-            f"plugin_shelf: `claude plugin list --json` exited {listed.returncode}", file=sys.stderr
-        )
-        return 1
-    absent = missing(json.loads(listed.stdout))
+    main = main_checkout()
+    here = {
+        row.get("id")
+        for row in rows(["claude", "plugin", "list", "--json"], ROOT)
+        if os.path.realpath(str(row.get("projectPath"))) == str(main)
+        and row.get("projectEnabled") is True
+        and Path(str(row.get("installPath"))).is_dir()
+    }
+    absent = [plugin for plugin in enabled(settings(ROOT)) if plugin not in here]
     if absent:
-        print(
-            "plugin_shelf: enabled in .claude/settings.json but not installed for this checkout: "
+        raise Stop(
+            f"enabled in .claude/settings.json but not installed for the main checkout {main}: "
             + ", ".join(absent)
-            + f"; fix: {FIX}",
-            file=sys.stderr,
+            + f"; fix: {FIX}"
         )
-        return 1
-    print("ok: every plugin .claude/settings.json enables has an install record for this checkout")
+    print(f"ok: every plugin .claude/settings.json enables is installed for {main}")
     return 0
 
 
@@ -143,7 +171,11 @@ def main(args: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    return install() if args == ["--install"] else check()
+    try:
+        return install() if args == ["--install"] else check()
+    except Stop as stop:
+        print(f"plugin_shelf: {stop}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
