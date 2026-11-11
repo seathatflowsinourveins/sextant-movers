@@ -158,10 +158,12 @@ def test_reserve_stream_yields_a_held_lease_and_closes_it(tmp_path: Path) -> Non
         with pytest.raises(LeaseError, match="already has a writer"):
             WriterLease(SCOPE, tmp_path, "other").acquire()
     assert not held.held
+    seen: list[WriterLease] = []
     with pytest.raises(RuntimeError, match="inside"):
         with reserve_stream(SCOPE, tmp_path, existing_streams=0, source="s", writer="w") as again:
+            seen.append(again)
             raise RuntimeError("inside")
-    assert not again.held
+    assert len(seen) == 1 and not seen[0].held
 
 
 # --- interruptions, threads and fork (the review's findings F1 to F7) ---------------------------
