@@ -1,11 +1,6 @@
-"""Part 5b-1: paced one-minute bars on the official SDK (`src/sextant_movers/ranking/bars.py`).
-
-Synthetic values only: invented `ZZ` symbols, prices and volumes; no fixture file. No test opens
-a socket: the SDK's client runs its own request, page and retry code against a scripted
-`_session`. The reference is `src/sextant/tradingview/bars.py` and
-`src/sextant/data/alpaca_history.py` at `06562bec0898a7203f4eaf69086ced83d2477e6b`; this process
-never imports it. The `local` proof runs it in a child interpreter named by
-`MOVERS_REFERENCE_PYTHON`, with the export's `src` directory named by `MOVERS_REFERENCE_SRC`.
+"""Paced one-minute bars: synthetic `ZZ` values, no fixture, no socket; the SDK's own page and
+retry code runs against a scripted `_session`. The `local` proof runs the reference (commit
+`06562bec0898a7203f4eaf69086ced83d2477e6b`) in a child interpreter.
 """
 
 import ast
@@ -54,11 +49,11 @@ D = Decimal
 START = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
 START_NS = calendar.timegm(START.timetuple()) * NS
 NY = ZoneInfo("America/New_York")
-REFERENCE_BLOBS = {  # git blob ids of the reference files at the pinned commit
+REFERENCE_BLOBS = {  # git blob ids at the reference commit
     "tradingview/bars.py": "8ae03acec28cabae0425cf6af1bce38b08910e60",
     "data/alpaca_history.py": "d1fc0542a33008f19a3a7d6d2c4d25f0f59eb63b",
 }
-# SHA-256 of this side's canonical parity answers; the `local` proof shows the reference gives them.
+# SHA-256 of the canonical answers; the `local` proof shows the reference gives the same.
 ANSWERS_DIGEST = "e5c298fa92b53006d95d574dacf478fc73430df0736eda6ead479fe004960629"
 
 
@@ -72,7 +67,7 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class Session:
-    """The SDK's `requests.Session` stand-in: `answer(params, n)` gives each status and body."""
+    """Stands in for the SDK's `requests.Session`; `answer(params, n)` gives status and body."""
 
     def __init__(self, answer: Any) -> None:
         self.answer, self.seen = answer, []
@@ -107,8 +102,7 @@ def client(m: Any, answer: Any) -> tuple[Any, Count, Session]:
     pacer = Count()
     paced = m.PacedStockBars(pacer=pacer, api_key="placeholder", secret_key="placeholder")  # noqa: S106
     paced._session = session = Session(answer)
-    # The retry loop sleeps `self._retry_wait` (alpaca/common/rest.py:133); the stock client's
-    # constructor does not forward `retry_wait_seconds`, and that path refuses 0 (rest.py:79).
+    # The retry sleep reads `_retry_wait` (alpaca/common/rest.py:133); the constructor refuses 0.
     paced._retry_wait = 0
     return paced, pacer, session
 
@@ -122,13 +116,8 @@ def raw(minute: int, *, c: float = 10.25, n: Any = 7, vw: Any = 10.1) -> dict[st
     return {"t": t, "o": 10.0, "h": 11.0, "l": 9.5, "c": c, "v": 1200, "n": n, "vw": vw}
 
 
-GOOD: dict[str, Any] = {
-    "symbol": "ZZQAAA",
-    "start_ns": START_NS,
-    "open": D("10"),
-    "close": D("10.25"),
-}
-GOOD |= {"volume": 1200, "trades": 7}
+GOOD: dict[str, Any] = {"symbol": "ZZQAAA", "start_ns": START_NS, "open": D("10")}
+GOOD |= {"close": D("10.25"), "volume": 1200, "trades": 7}
 
 
 def test_a_good_bar_closes_one_minute_after_it_starts_and_is_immutable() -> None:
@@ -195,7 +184,7 @@ def test_nanos_is_exact_at_the_microsecond_in_any_time_zone() -> None:
 
 
 def test_nanos_reads_a_naive_datetime_in_the_host_time_zone() -> None:
-    # Kept from the reference: `astimezone` takes a naive value as host local time.
+    # kept: `astimezone` reads a naive value as host local time
     seen = []
     with pytest.MonkeyPatch.context() as patch:
         for zone in ("UTC", "Asia/Tokyo"):
@@ -214,7 +203,7 @@ def test_bar_reads_the_sdk_model_built_from_a_raw_mapping() -> None:
     with pytest.raises(ValueError) as caught:
         _bar("ZZQAAA", AlpacaBar("ZZQAAA", raw(0, n=None)))
     assert str(caught.value) == "Alpaca bar lacks the vendor trade count: ZZQAAA"
-    with pytest.raises(ValidationError):  # the SDK's model refuses an absent key itself
+    with pytest.raises(ValidationError):  # the SDK refuses an absent key
         AlpacaBar("ZZQAAA", {k: v for k, v in raw(0).items() if k != "n"})
     fraction = AlpacaBar("ZZQAAA", raw(0) | {"v": 1200.75, "n": 7.5})
     assert (_bar("ZZQAAA", fraction).volume, _bar("ZZQAAA", fraction).trades) == (1200, 7)  # kept
@@ -346,11 +335,8 @@ def test_a_bad_window_or_symbol_is_refused_before_any_request(change: Any, messa
 
 def test_no_symbols_make_no_request() -> None:
     paced, pacer, session = client(m, script())
-    assert (
-        AlpacaBarSource(paced, batch=2, feed=DataFeed.SIP).minute_bars((), start=START, end=END)
-        == ()
-    )
-    assert (pacer.waits, session.seen) == (0, [])
+    source = AlpacaBarSource(paced, batch=2, feed=DataFeed.SIP)
+    assert (source.minute_bars((), start=START, end=END), pacer.waits, session.seen) == ((), 0, [])
 
 
 def answer_each_symbol(params: dict[str, Any], n: int) -> tuple[int, Any]:
@@ -380,12 +366,8 @@ def test_the_symbols_are_requested_once_each_in_sorted_chunks() -> None:
 def test_a_batch_above_two_hundred_is_one_request() -> None:
     names = ["ZZQ" + "".join(pair) for pair in product("ABCDEFGHIJ", repeat=2)][:201]
     paced, pacer, session = client(m, lambda params, n: (200, {"bars": {}}))
-    assert (
-        AlpacaBarSource(paced, batch=201, feed=DataFeed.SIP).minute_bars(
-            names, start=START, end=END
-        )
-        == ()
-    )
+    source = AlpacaBarSource(paced, batch=201, feed=DataFeed.SIP)
+    assert source.minute_bars(names, start=START, end=END) == ()
     assert len(session.seen) == pacer.waits == 1
     assert session.seen[0][2]["symbols"] == ",".join(sorted(names))
 
@@ -400,15 +382,12 @@ def test_the_module_imports_the_sdk_data_names_and_the_window_only() -> None:
     assert outside <= sdk | {"sextant_movers.ranking.window"}
     assert "sextant_movers.ranking.window" in outside
     text = Path(m.__file__).read_text()
-    unbuilt = ("os.environ", "getenv", "MAX_BATCH", "BarPoll", "AlpacaHistory")
-    assert not [
-        word for word in (*unbuilt, "environment_credentials", "build_universe") if word in text
-    ]
-    assert not [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Name) and n.id == "NS" and isinstance(n.ctx, ast.Store)
-    ]
+    for word in ("environ", "getenv", "MAX_BATCH", "BarPoll", "AlpacaHistory", "credentials"):
+        assert word not in text
+    for word in ("universe", "Listing"):
+        assert word not in text
+    stores = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)]
+    assert "NS" not in {n.id for n in stores}
 
 
 def answer_all(m: Any) -> dict[str, Any]:
@@ -462,17 +441,8 @@ def answer_all(m: Any) -> dict[str, Any]:
     for i in range(40):
         name = "ZZ" + "".join(rng.choice(letters) for _ in range(rng.randint(0, 33)))
         values.append(out(lambda name=name[i % 3 :]: m.symbol_name(name)))
-    numbers: list[Any] = [
-        D("1.50"),
-        7,
-        "1e3",
-        "zz",
-        True,
-        None,
-        float("nan"),
-        float("inf"),
-        0.1 + 0.2,
-    ]
+    numbers: list[Any] = [D("1.50"), 7, "1e3", "zz", True, None, float("nan"), float("inf")]
+    numbers.append(0.1 + 0.2)
     numbers += [rng.uniform(0, 1000) for _ in range(21)]
     values += [out(lambda x=x: m.decimal_value(x)) for x in numbers]
     for _ in range(30):
