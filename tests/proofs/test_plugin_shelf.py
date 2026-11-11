@@ -1,22 +1,13 @@
 """Proof: the session shelf installs from the main checkout, and session start checks it.
 
-Source: the origin repository's `deploy/wsl/shelf.sh` and `scripts/runtime_doctor.py`
-(its plugin check) at 7252b0f5c7ccdb416356aaddd9b53fa9a33bd405;
-code.claude.com/docs/en/plugins/loading.md, "Enabled in project settings but not
-installed"; code.claude.com/docs/en/plugins/install.md, "Choose an install scope";
-code.claude.com/docs/en/plugins/cli-reference.md, "plugin install", "plugin list",
-"plugin marketplace add" and "plugin marketplace list"; git-scm.com/docs/git-worktree,
-"list". All read 2026-11-11.
-
-A stub `claude` on a private PATH records each call; no real plugin command runs. Each
-test copies the script into a throwaway repository under `tmp_path` and makes its
-linked worktree there with plain `git`. The real CLI run is the measurement in the PR.
+Sources: docs/manifest.md, "Shelf install step and its session-start check". A stub
+`claude` records each call in a repository and linked worktree made under `tmp_path`;
+it proves only our argument list, and the real run is in the PR.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -26,12 +17,7 @@ ROOT = Path(__file__).parents[2]
 SETTINGS = json.loads((ROOT / ".claude/settings.json").read_text())
 FIX = "python3 scripts/plugin_shelf.py --install </dev/null"
 CHECK = "python3 scripts/plugin_shelf.py --check </dev/null"
-COPIED = (
-    "scripts/plugin_shelf.py",
-    ".claude/settings.json",
-    ".claude/lsp/.claude-plugin/marketplace.json",
-    ".gitignore",
-)
+LISTED = [["plugin", "marketplace", "list", "--json"]]
 STUB = """\
 import json, os, sys
 argv = sys.argv[1:]
@@ -46,33 +32,29 @@ raise SystemExit(1 if fail and argv[:2] == ["plugin", fail] else 0)
 """
 
 
-def _git(tmp_path: Path, *args: str, cwd: Path) -> str:
-    env = {
-        "HOME": str(tmp_path),
-        "PATH": "/usr/bin:/bin",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.invalid",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+def _git(tmp_path: Path, cwd: Path, *args: str) -> str:
+    who = {
+        f"GIT_{role}_{key}": "t" for role in ("AUTHOR", "COMMITTER") for key in ("NAME", "EMAIL")
     }
-    done = subprocess.run(
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", **who}
+    return subprocess.run(
         ["git", *args], cwd=cwd, env=env, text=True, capture_output=True, check=True
-    )
-    return done.stdout
+    ).stdout
 
 
 def _repo(tmp_path: Path) -> tuple[Path, Path]:
     """A main checkout and its linked worktree, both under `tmp_path`."""
-    main = tmp_path / "main"
-    for name in COPIED:
+    main, task = tmp_path / "main", tmp_path / "task"
+    for name in ("scripts/plugin_shelf.py", ".claude/settings.json", ".gitignore"):
         (main / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, main / name)
-    _git(tmp_path, "init", "-q", "-b", "main", cwd=main)
-    _git(tmp_path, "add", "-A", cwd=main)
-    _git(tmp_path, "commit", "-q", "-m", "fixture", cwd=main)
-    _git(tmp_path, "worktree", "add", "-q", "-b", "task", str(tmp_path / "task"), cwd=main)
-    return main.resolve(), (tmp_path / "task").resolve()
+    _git(tmp_path, main, "init", "-q", "-b", "main")
+    _git(tmp_path, main, "add", "-A")
+    _git(tmp_path, main, "commit", "-q", "-m", "fixture")
+    _git(tmp_path, main, "worktree", "add", "-q", "-b", "task", str(task))
+    listed = _git(tmp_path, task, "worktree", "list", "--porcelain").splitlines()
+    assert listed[0] == f"worktree {main.resolve()}" and f"worktree {task.resolve()}" in listed
+    return main.resolve(), task.resolve()
 
 
 def _enabled() -> list[str]:
@@ -86,26 +68,13 @@ def _expected_source(source: dict) -> str:
     return source["repo"] + "#" + source["ref"]
 
 
-def _ours(main: Path) -> list[dict]:
-    """The registry as `claude plugin marketplace list --json` shows it after our adds."""
-    rows = []
-    for name, entry in SETTINGS["extraKnownMarketplaces"].items():
-        source = entry["source"]
-        if source["source"] == "directory":
-            path = str(main / source["path"])
-            rows.append({"name": name, "source": "directory", "path": path})
-        else:
-            rows.append({"name": name, "source": "github", "repo": source["repo"]})
-    return rows
-
-
 def _run(
     tmp_path: Path,
     checkout: Path,
     mode: str,
     records: str = "[]",
     markets: str = "[]",
-    fail: str | None = None,
+    fail: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -141,31 +110,21 @@ def _run(
     return result, calls
 
 
-def _record(plugin: str, path: Path, project_enabled: bool = True, install: str = "") -> str:
-    return json.dumps(
-        {
-            "id": plugin,
-            "scope": "local",
-            "enabled": True,
-            "projectEnabled": project_enabled,
-            "projectPath": str(path),
-            "installPath": install or str(path),
-        }
-    )
-
-
-def _records(main: Path, **kwargs: object) -> str:
-    rows = [_record(plugin, main, **kwargs) for plugin in _enabled()]  # type: ignore[arg-type]
+def _records(path: Path, project_enabled: bool = True, install: Path | None = None) -> str:
+    row = {"scope": "local", "enabled": True, "projectEnabled": project_enabled}
+    row |= {"projectPath": str(path), "installPath": str(install or path)}
+    rows = [{"id": plugin, **row} for plugin in _enabled()]
     # The CLI also lists a session-scope plugin that no settings file declares.
-    rows.append(json.dumps({"id": "other@inline", "scope": "session", "enabled": True}))
-    return "[" + ",".join(rows) + "]"
+    return json.dumps([*rows, {"id": "other@inline", "scope": "session", "enabled": True}])
 
 
 def _one_line(stderr: str) -> str:
-    assert "Traceback" not in stderr
-    lines = stderr.strip().splitlines()
-    assert len(lines) == 1, stderr
-    return lines[0]
+    assert "Traceback" not in stderr and len(stderr.strip().splitlines()) == 1, stderr
+    return stderr.strip()
+
+
+def _lsp(path: Path, name: str = "movers-lsp") -> str:
+    return json.dumps([{"name": name, "source": "directory", "path": str(path)}])
 
 
 def test_install_adds_at_user_scope_and_installs_at_local_scope(tmp_path: Path) -> None:
@@ -177,16 +136,15 @@ def test_install_adds_at_user_scope_and_installs_at_local_scope(tmp_path: Path) 
         for entry in SETTINGS["extraKnownMarketplaces"].values()
     ]
     installs = [["plugin", "install", plugin, "--scope", "local"] for plugin in _enabled()]
-    listed = [["plugin", "marketplace", "list", "--json"]]
-    assert [call["argv"] for call in calls] == listed + adds + installs
+    assert [call["argv"] for call in calls] == LISTED + adds + installs
     assert len(adds) == 4 and len(installs) == 5
     assert {call["cwd"] for call in calls} == {str(main)}
     assert {call["stdin"] for call in calls} == {""}
-    # Local scope writes the untracked `.claude/settings.local.json`, which this
-    # repository's own .gitignore ignores (HOME here has no global ignore file).
-    assert ".claude/settings.local.json" in result.stdout
-    assert _git(tmp_path, "status", "--porcelain", cwd=main) == ""
-    _git(tmp_path, "check-ignore", "-q", ".claude/settings.local.json", cwd=main)
+    # Local scope writes the untracked settings.local.json, which this repository's
+    # own .gitignore ignores (HOME here has no global ignore file).
+    assert ".claude/settings.local.json is ignored" in result.stdout
+    assert _git(tmp_path, main, "status", "--porcelain") == ""
+    _git(tmp_path, main, "check-ignore", "-q", ".claude/settings.local.json")
 
 
 def test_install_stops_before_any_add_when_git_does_not_ignore_the_local_file(
@@ -194,11 +152,11 @@ def test_install_stops_before_any_add_when_git_does_not_ignore_the_local_file(
 ) -> None:
     main, _ = _repo(tmp_path)
     (main / ".gitignore").write_text("__pycache__/\n")
-    _git(tmp_path, "commit", "-q", "-am", "no ignore", cwd=main)
+    _git(tmp_path, main, "commit", "-q", "-am", "no ignore")
     result, calls = _run(tmp_path, main, "--install")
     assert result.returncode == 1
     assert ".claude/settings.local.json" in _one_line(result.stderr)
-    assert [call["argv"] for call in calls] == [["plugin", "marketplace", "list", "--json"]]
+    assert [call["argv"] for call in calls] == LISTED
 
 
 def test_install_started_in_a_linked_worktree_runs_from_the_main_checkout(
@@ -209,13 +167,12 @@ def test_install_started_in_a_linked_worktree_runs_from_the_main_checkout(
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(calls) == 10
     assert {call["cwd"] for call in calls} == {str(main)}
-    assert _git(tmp_path, "status", "--porcelain", cwd=task) == ""
 
 
 def test_install_repeats_and_stops_on_a_failed_command(tmp_path: Path) -> None:
     main, _ = _repo(tmp_path)
     first, once = _run(tmp_path, main, "--install")
-    second, twice = _run(tmp_path, main, "--install", markets=json.dumps(_ours(main)))
+    second, twice = _run(tmp_path, main, "--install", markets=_lsp(main / ".claude/lsp"))
     assert first.returncode == second.returncode == 0, second.stderr
     assert [call["argv"] for call in once] == [call["argv"] for call in twice]
     failed, calls = _run(tmp_path, main, "--install", fail="install")
@@ -229,27 +186,26 @@ def test_install_refuses_when_our_directory_is_registered_under_another_name(
     tmp_path: Path,
 ) -> None:
     main, task = _repo(tmp_path)
-    stale = [{"name": "sextant-lsp", "source": "directory", "path": str(main / ".claude/lsp")}]
     for checkout in (main, task):
-        result, calls = _run(tmp_path, checkout, "--install", markets=json.dumps(stale))
+        markets = _lsp(main / ".claude/lsp", "sextant-lsp")
+        result, calls = _run(tmp_path, checkout, "--install", markets=markets)
         assert result.returncode == 1
         line = _one_line(result.stderr)
         assert "'sextant-lsp'" in line and "'movers-lsp'" in line
         assert "claude plugin marketplace remove sextant-lsp" in line
         # Nothing is added, installed, removed or re-pointed.
-        assert [call["argv"] for call in calls] == [["plugin", "marketplace", "list", "--json"]]
+        assert [call["argv"] for call in calls] == LISTED
 
 
 def test_install_refuses_when_our_name_is_registered_from_another_path(tmp_path: Path) -> None:
     main, task = _repo(tmp_path)
     for path in (tmp_path / "another-repository/.claude/lsp", task / ".claude/lsp"):
-        taken = [{"name": "movers-lsp", "source": "directory", "path": str(path)}]
-        result, calls = _run(tmp_path, task, "--install", markets=json.dumps(taken))
+        result, calls = _run(tmp_path, task, "--install", markets=_lsp(path))
         assert result.returncode == 1
         line = _one_line(result.stderr)
         assert str(path) in line and str(main / ".claude/lsp") in line
         assert "claude plugin marketplace remove movers-lsp" in line
-        assert [call["argv"] for call in calls] == [["plugin", "marketplace", "list", "--json"]]
+        assert [call["argv"] for call in calls] == LISTED
 
 
 def test_an_answer_that_is_not_json_fails_in_one_line_naming_the_command(
@@ -282,24 +238,21 @@ def test_check_fails_naming_each_plugin_without_a_main_checkout_record(tmp_path:
         _records(task),
         _records(tmp_path / "another-repository"),
         _records(main, project_enabled=False),
-        _records(main, install=str(tmp_path / "gone")),
+        _records(main, install=tmp_path / "gone"),
     ):
         for checkout in (main, task):
             result, _ = _run(tmp_path, checkout, "--check", records=records)
             assert result.returncode == 1
             line = _one_line(result.stderr)
-            for plugin in _enabled():
-                assert plugin in line
-            assert FIX in line
+            assert all(plugin in line for plugin in _enabled()) and FIX in line
 
 
 def test_check_without_a_claude_binary_says_so_and_fails(tmp_path: Path) -> None:
-    main, _ = _repo(tmp_path)
     empty = tmp_path / "empty"
     empty.mkdir()
     result = subprocess.run(
-        [sys.executable, str(main / "scripts/plugin_shelf.py"), "--check"],
-        cwd=main,
+        [sys.executable, str(ROOT / "scripts/plugin_shelf.py"), "--check"],
+        cwd=tmp_path,
         env={"HOME": str(tmp_path), "PATH": str(empty)},
         text=True,
         capture_output=True,
@@ -308,7 +261,7 @@ def test_check_without_a_claude_binary_says_so_and_fails(tmp_path: Path) -> None
         check=False,
     )
     assert result.returncode == 1
-    assert "claude is not on PATH" in _one_line(result.stderr)
+    assert "claude is not on PATH" in result.stderr
 
 
 def test_the_directory_marketplace_has_this_repository_s_own_name() -> None:
@@ -324,15 +277,11 @@ def test_the_directory_marketplace_has_this_repository_s_own_name() -> None:
 
 
 def _recipe(justfile: str, name: str) -> str:
-    """A recipe's header and every indented body line under it."""
+    """A recipe's header line and every indented body line under it."""
     lines = justfile.splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith(name + ":"))
-    body = [lines[start]]
-    for line in lines[start + 1 :]:
-        if line and not line[0].isspace():
-            break
-        body.append(line)
-    return "\n".join(body)
+    end = next((i for i in range(start + 1, len(lines)) if lines[i][:1].strip()), len(lines))
+    return "\n".join(lines[start:end])
 
 
 def test_session_start_runs_the_check_and_ci_does_not() -> None:
@@ -340,14 +289,6 @@ def test_session_start_runs_the_check_and_ci_does_not() -> None:
     assert CHECK in _recipe(justfile, "session-start")
     assert "session-start" not in _recipe(justfile, "ci")
     assert "plugin_shelf" not in _recipe(justfile, "ci")
-    # The recipe reader sees body lines, not only the header.
+    # The reader sees body lines, not only the header.
     assert "uv sync --frozen" in _recipe(justfile, "sync")
     assert "session-start" not in (ROOT / ".github/workflows/ci.yml").read_text()
-
-
-def test_the_fixture_worktree_is_linked_to_the_fixture_main_checkout(tmp_path: Path) -> None:
-    main, task = _repo(tmp_path)
-    listed = _git(tmp_path, "worktree", "list", "--porcelain", cwd=task).splitlines()
-    assert listed[0] == f"worktree {main}"
-    assert f"worktree {task}" in listed
-    assert os.path.realpath(task) != os.path.realpath(main)

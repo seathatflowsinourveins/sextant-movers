@@ -1,33 +1,10 @@
 #!/usr/bin/env python3
 """Install the session shelf from the main checkout, or check that it is installed.
 
-`.claude/settings.json` declares the shelf: `extraKnownMarketplaces` names the
-marketplaces and `enabledPlugins` the plugins. Declaring is not installing: "Claude
-Code fetches a plugin with an external source only when one of these sources sets the
-plugin to `true`: Your user settings; A `.claude/settings.local.json` that git doesn't
-track; The `--settings` flag; Managed settings" (code.claude.com/docs/en/plugins/
-loading.md, "Enabled in project settings but not installed", read 2026-11-11).
-
-Built on the origin repository's `deploy/wsl/shelf.sh` at
-7252b0f5c7ccdb416356aaddd9b53fa9a33bd405: `--install` adds each marketplace with
-`claude plugin marketplace add <source> --scope user` and installs each enabled id with
-`claude plugin install <id> --scope local`, always from the main checkout, the first
-`worktree` line of `git worktree list --porcelain` (git-scm.com/docs/git-worktree,
-"list", read 2026-11-11). Local scope writes only the untracked
-`.claude/settings.local.json` (code.claude.com/docs/en/plugins/install.md, "Choose an
-install scope", read 2026-11-11), which `.gitignore` ignores; no tracked file changes.
-There is one marketplace registry per user, keyed by name (loading.md), so before any
-add it reads `claude plugin marketplace list --json` and refuses a directory
-marketplace of ours registered under another name, or our name registered from
-another path: the CLI answers the first with "already on disk" and the later installs
-with "not found in marketplace", and re-points the second ("now points at"), measured
-2026-11-11 with Claude Code 2.1.322 in an isolated `CLAUDE_CONFIG_DIR`.
-
-`--check` reads `claude plugin list --json` as the origin repository's
-`scripts/runtime_doctor.py` does at the same commit: each enabled id needs a row whose
-`projectPath` is the main checkout, whose `projectEnabled` is true and whose
-`installPath` exists. A linked worktree lists the main checkout's local install with
-those fields, measured the same day.
+Built on the origin repository's `deploy/wsl/shelf.sh` and `scripts/runtime_doctor.py`
+at 7252b0f5c7ccdb416356aaddd9b53fa9a33bd405: marketplaces at scope user, plugins at
+scope local, from the main checkout. Sources and measurements: docs/manifest.md,
+"Shelf install step and its session-start check".
 """
 
 from __future__ import annotations
@@ -42,13 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FIX = "python3 scripts/plugin_shelf.py --install </dev/null"
 LOCAL = ".claude/settings.local.json"
-USER = ("--scope", "user")
+USER, LOCAL_SCOPE = ("--scope", "user"), ("--scope", "local")
 SOURCE_KEYS = {"github": {"repo", "ref"}, "git": {"url", "ref"}, "directory": {"path"}}
 USAGE = "usage: plugin_shelf.py {--install | --check}"
 REMEDY = (
     "the CLI's remedy: to use this source instead, remove that marketplace first with "
-    "`claude plugin marketplace remove {name}` (it uninstalls that marketplace's plugins), "
-    "then run this again"
+    "`claude plugin marketplace remove {}` (it uninstalls its plugins), then run this again"
 )
 
 
@@ -56,11 +32,8 @@ class Stop(Exception):
     """One line for stderr, then exit 1."""
 
 
-def run(command: list[str], cwd: Path, timeout: int | None = 60, show: bool = False) -> str:
-    """Run one command without a prompt and return its stdout, or stop in one line.
-
-    With `show`, the CLI's own lines pass through to the terminal instead.
-    """
+def run(command: list[str], cwd: Path, show: bool = False) -> str:
+    """Run a command without a prompt; `show` lets the CLI's own lines through."""
     shown = " ".join(command)
     try:
         done = subprocess.run(
@@ -69,11 +42,11 @@ def run(command: list[str], cwd: Path, timeout: int | None = 60, show: bool = Fa
             stdin=subprocess.DEVNULL,
             capture_output=not show,
             text=True,
-            timeout=timeout,
+            timeout=None if show else 60,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        raise Stop(f"`{shown}` ran past {timeout} seconds") from None
+        raise Stop(f"`{shown}` ran past 60 seconds") from None
     except OSError as error:
         raise Stop(f"`{shown}` did not start: {error.strerror}") from None
     if done.returncode != 0:
@@ -82,10 +55,8 @@ def run(command: list[str], cwd: Path, timeout: int | None = 60, show: bool = Fa
 
 
 def rows(command: list[str], cwd: Path) -> list[dict]:
-    """A CLI answer that must be a JSON array of objects."""
-    text = run(command, cwd)
     try:
-        answer = json.loads(text)
+        answer = json.loads(run(command, cwd))
     except json.JSONDecodeError:
         answer = None
     if not isinstance(answer, list) or not all(isinstance(row, dict) for row in answer):
@@ -93,9 +64,8 @@ def rows(command: list[str], cwd: Path) -> list[dict]:
     return answer
 
 
-def main_checkout(start: Path = ROOT) -> Path:
-    """The main worktree, which `git worktree list --porcelain` lists first."""
-    first = run(["git", "worktree", "list", "--porcelain"], start).partition("\n")[0]
+def main_checkout() -> Path:
+    first = run(["git", "worktree", "list", "--porcelain"], ROOT).partition("\n")[0]
     if not first.startswith("worktree "):
         raise Stop("`git worktree list --porcelain` did not start with a worktree line")
     return Path(first.removeprefix("worktree ")).resolve()
@@ -114,7 +84,7 @@ def source_argument(source: dict) -> str:
     kind = source.get("source")
     keys = SOURCE_KEYS.get(kind)
     if keys is None or not set(source) - {"source"} <= keys:
-        raise Stop(f"unsupported marketplace source {source!r}")
+        raise ValueError(f"unsupported marketplace source {source!r}")
     if kind == "directory":
         return source["path"]
     base = source["repo"] if kind == "github" else source["url"]
@@ -123,45 +93,38 @@ def source_argument(source: dict) -> str:
 
 def commands(declared: dict) -> list[list[str]]:
     """Every vendor command the install runs, in order."""
+    marketplaces = declared.get("extraKnownMarketplaces", {}).values()
     adds = [
         ["claude", "plugin", "marketplace", "add", source_argument(entry["source"]), *USER]
-        for entry in declared.get("extraKnownMarketplaces", {}).values()
+        for entry in marketplaces
     ]
-    installs = [
-        ["claude", "plugin", "install", plugin, "--scope", "local"] for plugin in enabled(declared)
-    ]
-    return adds + installs
+    return adds + [["claude", "plugin", "install", id, *LOCAL_SCOPE] for id in enabled(declared)]
 
 
 def collision(declared: dict, registered: list[dict], main: Path) -> str | None:
-    """A registry entry our adds would miss or re-point; never changed here."""
+    """A registry entry the adds would miss or re-point; it is never changed here."""
     for name, entry in declared.get("extraKnownMarketplaces", {}).items():
         if entry["source"].get("source") != "directory":
             continue
         ours = os.path.realpath(main / entry["source"]["path"])
         for row in registered:
-            path = row.get("path") or row.get("repo") or row.get("url") or "?"
-            same_path = row.get("source") == "directory" and os.path.realpath(path) == ours
-            if same_path and row.get("name") != name:
-                return (
-                    f"{ours} is registered as marketplace '{row.get('name')}', so adding it as "
-                    f"'{name}' stops at 'already on disk' and its installs fail; "
-                    + REMEDY.format(name=row.get("name"))
-                )
-            if row.get("name") == name and not same_path:
-                return (
-                    f"marketplace '{name}' is registered from {path}, not from the main "
-                    f"checkout's {ours}, and adding it would re-point it; "
-                    + REMEDY.format(name=name)
-                )
+            other, path = row.get("name"), row.get("path") or row.get("repo") or row.get("url")
+            same = row.get("source") == "directory" and os.path.realpath(str(path)) == ours
+            if same and other != name:
+                why = f"{ours} is registered as marketplace '{other}', not '{name}'"
+                return why + ", so the adds stop at 'already on disk'; " + REMEDY.format(other)
+            if other == name and not same:
+                why = f"marketplace '{name}' is registered from {path}, not from {ours}"
+                return why + ", and an add would re-point it; " + REMEDY.format(name)
     return None
 
 
 def install() -> int:
     main = main_checkout()
     declared = settings(main)
-    listed = ["claude", "plugin", "marketplace", "list", "--json"]
-    refused = collision(declared, rows(listed, main), main)
+    refused = collision(
+        declared, rows(["claude", "plugin", "marketplace", "list", "--json"], main), main
+    )
     if refused:
         raise Stop(refused)
     try:
@@ -169,28 +132,23 @@ def install() -> int:
     except Stop:
         raise Stop(f"git does not ignore {LOCAL} in {main}, which a local install writes") from None
     tracked = run(["git", "diff", "HEAD", "--binary"], main)
-    steps = commands(declared)
-    for command in steps:
+    for command in commands(declared):
         print("plugin_shelf: " + " ".join(command), flush=True)
-        run(command, main, timeout=None, show=True)
+        run(command, main, show=True)
     if run(["git", "diff", "HEAD", "--binary"], main) != tracked:
         raise Stop(f"a tracked file in {main} changed during the install; see `git diff`")
-    print(
-        f"ok: {len(steps)} shelf commands ran from the main checkout {main}; no tracked file "
-        f"changed, and the local installs live in the untracked {LOCAL}, which git ignores"
-    )
+    print(f"ok: the shelf is installed from {main}; no tracked file changed; {LOCAL} is ignored")
     return 0
 
 
 def check() -> int:
     main = main_checkout()
-    records = rows(["claude", "plugin", "list", "--json"], ROOT)
     here = {
-        str(row.get("id"))
-        for row in records
-        if os.path.realpath(str(row.get("projectPath") or "/nonexistent")) == str(main)
+        row.get("id")
+        for row in rows(["claude", "plugin", "list", "--json"], ROOT)
+        if os.path.realpath(str(row.get("projectPath"))) == str(main)
         and row.get("projectEnabled") is True
-        and Path(str(row.get("installPath") or "/nonexistent")).is_dir()
+        and Path(str(row.get("installPath"))).is_dir()
     }
     absent = [plugin for plugin in enabled(settings(ROOT)) if plugin not in here]
     if absent:
