@@ -17,7 +17,7 @@ KNOWN_REPEATS: dict[str, int | None] = {"Practice or pick": None}
 # renamed a row, so a merge, rebase or cherry-pick from an older base restores it, or keeps its
 # old twin beside the renamed row, without repeating a key. Add a row's key here when you retire
 # or rename it.
-RETIRED: tuple[str, ...] = ()
+RETIRED: tuple[str, ...] = ("alpaca-py for bars, listings and the movers cross-check",)
 
 
 def _keys() -> Counter[str]:
