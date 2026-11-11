@@ -1,17 +1,11 @@
 """The account lease and the stream reservation: one writer per account, across processes.
 
 The reference is `WriterLease` and `reserve_stream` at its commit
-06562bec0898a7203f4eaf69086ced83d2477e6b (`src/sextant/execution/custody.py:75-85,163-205`,
-`src/sextant/tradingview/producer.py:33-47`). Its lock is the standard library's `fcntl.flock`
-(https://docs.python.org/3.13/library/fcntl.html) on a file named by the SHA-256 of the account
-key; flock(2) (https://man7.org/linux/man-pages/man2/flock.2.html, both read 2026-11-11) ties the
-lock to the open file description and releases it when its descriptors close.
+06562bec0898a7203f4eaf69086ced83d2477e6b; `sextant_movers/lease.py` names its lines and sources.
 
-Every child is a fresh interpreter (`sys.executable -I`, or for the reference proof one whose
-`PYTHONPATH` names the reference) that reports on its stdout and waits on its stdin, or a fork
-that reports on a pipe. Threads meet at events, barriers and a condition; interruptions are
-monkeypatched standard-library calls. No step sleeps or measures time. Every path is under
-pytest's `tmp_path`. Scope names are made up.
+Children are fresh interpreters (`sys.executable -I`) that answer on stdout and wait on stdin, or
+a fork that answers on a pipe. Threads meet at events, barriers and a condition; interruptions are
+monkeypatched standard-library calls. No step sleeps or measures time; every path is in `tmp_path`.
 """
 
 import errno
@@ -166,7 +160,7 @@ def test_reserve_stream_yields_a_held_lease_and_closes_it(tmp_path: Path) -> Non
     assert len(seen) == 1 and not seen[0].held
 
 
-# --- interruptions, threads and fork (the review's findings F1 to F7) ---------------------------
+# --- interruptions, threads and fork --------------------------------------------------------
 
 
 def _track_descriptors(monkeypatch) -> tuple[list[int], list[int]]:
@@ -214,7 +208,7 @@ def _interrupted_at_publication(*, after: bool) -> type[WriterLease]:
 def test_a_failed_acquire_leaves_no_descriptor_and_no_holder(
     tmp_path: Path, monkeypatch, failure: str
 ) -> None:
-    """F3: from the open to the publication, any failure closes what it opened."""
+    """From the open to the publication, any failure closes what it opened."""
     opened, closed = _track_descriptors(monkeypatch)
     lease_class = WriterLease
     if failure == "uuid4":
@@ -236,7 +230,7 @@ def test_a_failed_acquire_leaves_no_descriptor_and_no_holder(
 
 
 def test_an_interrupted_close_never_closes_a_reused_descriptor(tmp_path: Path, monkeypatch) -> None:
-    """F2: the descriptor leaves the object before it is closed, so a retry closes nothing."""
+    """The descriptor leaves the object before it is closed, so a retry closes nothing."""
     first = WriterLease(SCOPE, tmp_path, "first")
     first.acquire()
     number = first.fd
@@ -278,7 +272,7 @@ class _ProbeLock:
 
 
 def test_two_threads_closing_at_once_close_the_descriptor_once(tmp_path: Path, monkeypatch) -> None:
-    """F2: the first close pauses inside os.close; the second must wait or find nothing."""
+    """The first close pauses inside os.close; the second must wait or find nothing."""
     lease = WriterLease(SCOPE, tmp_path, "w")
     lease.acquire()
     number = lease.fd
@@ -330,7 +324,7 @@ def test_two_threads_closing_at_once_close_the_descriptor_once(tmp_path: Path, m
 
 
 def test_two_threads_binding_at_once_bind_one_pacer(tmp_path: Path) -> None:
-    """F5: each bind reads the pacer and waits there until the other bind reads it too or waits
+    """Each bind reads the pacer and waits there until the other bind reads it too or waits
     at the lease's lock, so an unguarded check-then-set would accept both."""
     progress = threading.Condition()
     probe = _ProbeLock(progress)
@@ -377,7 +371,7 @@ def test_two_threads_binding_at_once_bind_one_pacer(tmp_path: Path) -> None:
 def test_an_interrupt_right_after_the_reservation_acquires_releases_it(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """F4: the reservation's cleanup covers its own acquire."""
+    """The reservation's cleanup covers its own acquire."""
     real_acquire = WriterLease.acquire
 
     def acquire_then_interrupt(self: WriterLease) -> None:
@@ -395,7 +389,7 @@ def test_an_interrupt_right_after_the_reservation_acquires_releases_it(
 
 
 def test_a_forked_child_holds_nothing_and_the_parent_close_releases(tmp_path: Path) -> None:
-    """F1: ownership ends at the process boundary. The child's inherited copy is closed at fork,
+    """Ownership ends at the process boundary. The child's inherited copy is closed at fork,
     and closing a copy of the open file description does not release the parent's lock."""
     lease = WriterLease(SCOPE, tmp_path, "parent")
     lease.acquire()
@@ -442,13 +436,13 @@ def test_a_forked_child_holds_nothing_and_the_parent_close_releases(tmp_path: Pa
     ("broker", "account"), [(1, "a"), ("b", 2), (b"b", "a"), ("b", None), (None, None)]
 )
 def test_broker_and_account_must_be_strings(broker, account) -> None:
-    """F6: a non-string could format to a different key on each acquire."""
+    """A non-string could format to a different key on each acquire."""
     with pytest.raises(ValueError, match="must be strings"):
         AccountScope(broker, account)
 
 
 def test_a_colon_in_the_broker_is_refused_and_the_key_stays_the_references() -> None:
-    """F7: with no colon in the broker, `broker:account` names one pair, in the reference's form."""
+    """With no colon in the broker, `broker:account` names one pair, in the reference's form."""
     with pytest.raises(ValueError, match="colon"):
         AccountScope("MADE_UP:BROKER", "account")
     assert AccountScope("MADE_UP", "BROKER:account").key == "MADE_UP:BROKER:account"
@@ -628,7 +622,6 @@ def test_the_real_reference_lease_and_this_lease_refuse_each_other(tmp_path: Pat
     reference = os.environ.get("MOVERS_REFERENCE_SRC")
     if not reference:
         pytest.skip("set MOVERS_REFERENCE_SRC to the reference's exported src/ directory")
-    # -s and -P keep the user's site and the working directory off the child's path; PYTHONPATH,
-    # set only in the child's own environment, is how it reaches the reference.
+    # -s and -P keep the user's site and the cwd off the path; PYTHONPATH adds the export.
     command = [sys.executable, "-s", "-P"]
     _mutual_refusal(tmp_path, REFERENCE_CHILD, command=command, env={"PYTHONPATH": reference})

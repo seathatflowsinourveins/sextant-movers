@@ -6,12 +6,11 @@ BUILD ON the reference at its commit 06562bec0898a7203f4eaf69086ced83d2477e6b:
 lock file path, its open flags and mode, and the lock call are the reference's, so a reference
 process and a process of this package refuse each other (tests/proofs/test_lease.py).
 
-USE AS IS the standard library's lock: `fcntl.flock` with `LOCK_EX | LOCK_NB`
-(https://docs.python.org/3.13/library/fcntl.html, read 2026-11-11). flock(2)
-(https://man7.org/linux/man-pages/man2/flock.2.html, read 2026-11-11): a held lock fails a
-non-blocking request with EWOULDBLOCK, which Python raises as `BlockingIOError` (measured in the
-proof); the lock belongs to the open file description and goes only with LOCK_UN or the close of
-its last descriptor, which _exit(2) does for every descriptor still open when a process ends.
+USE AS IS `fcntl.flock` with `LOCK_EX | LOCK_NB` (https://docs.python.org/3.13/library/fcntl.html,
+read 2026-11-11). Per flock(2) (https://man7.org/linux/man-pages/man2/flock.2.html, read
+2026-11-11) a held lock fails a non-blocking request with EWOULDBLOCK (`BlockingIOError`,
+measured), and the lock goes only with LOCK_UN or the close of the open file description's last
+descriptor, as at process exit.
 
 Ownership ends at the process boundary: a lease records the pid that acquired it, and a hook
 registered with `os.register_at_fork(after_in_child=...)`
