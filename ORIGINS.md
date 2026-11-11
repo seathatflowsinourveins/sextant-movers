@@ -6,6 +6,13 @@ Every file in this tree and where it comes from. Source: Sextant, `main` at `3b5
 
 | File | Origin | Blob at that commit | State | Note |
 |---|---|---|---|---|
+| `.claude/lsp/.claude-plugin/marketplace.json` | `.claude/lsp/.claude-plugin/marketplace.json` | `2efe8c006c76` | generalised | at `0a4d42b2`: provenance pointer now ORIGINS.md (shelf lock not carried) |
+| `.claude/lsp/plugins/pyright-lsp/.claude-plugin/plugin.json` | same path | `dda371eceb19` | verbatim | at `0a4d42b2` |
+| `.claude/lsp/plugins/pyright-lsp/LICENSE` | same path | `d64569567334` | verbatim | at `0a4d42b2` |
+| `.claude/lsp/plugins/pyright-lsp/README.md` | same path | `b53304669120` | verbatim | at `0a4d42b2` |
+| `.claude/lsp/plugins/typescript-lsp/.claude-plugin/plugin.json` | same path | `f1a2f31021c0` | verbatim | at `0a4d42b2` |
+| `.claude/lsp/plugins/typescript-lsp/LICENSE` | same path | `d64569567334` | verbatim | at `0a4d42b2` |
+| `.claude/lsp/plugins/typescript-lsp/README.md` | same path | `316c64563506` | verbatim | at `0a4d42b2` |
 | `.devcontainer/agents/package-lock.json` | `.devcontainer/agents/package-lock.json` | `fbc1a3d92bd3` | verbatim |  |
 | `.devcontainer/agents/package.json` | `.devcontainer/agents/package.json` | `8c7e6f5fb0f4` | verbatim |  |
 | `.gitattributes` | `.gitattributes` | `87cdbe5b5384` | verbatim |  |
@@ -124,7 +131,7 @@ Every file in this tree and where it comes from. Source: Sextant, `main` at `3b5
 | `docs/design.md`, trading ADRs (0002-0017, 0019-0030), `docs/research/`, the other handbook pages, `docs/handbook/lessons.jsonl` | Sextant's trading design and records; ADR-0018's registry rule is quoted in MANIFEST-TEMPLATE.md |
 | `.github/workflows/scoreboard.yml` | builds Sextant's devcontainer image, which is not included |
 | `.github/rulesets/live.json`, `ledger.json`; `paper` and `live` environments | Sextant's live-trading and ledger branches |
-| `.devcontainer/` (except `agents/`), `deploy/` (except `openviking/pins.json`, `upkeep/`, and `wsl/lane-runtimes/claude-launch.sh` with its `model-policy.json`), `.claude/` (this repository writes its own `settings.json` and `agents/`), `.codex/`, `.mcp.json`, `.qmd/` | Sextant's host, sandbox image, runtime launchers, monitor stack and session settings |
+| `.devcontainer/` (except `agents/`), `deploy/` (except `openviking/pins.json`, `upkeep/`, and `wsl/lane-runtimes/claude-launch.sh` with its `model-policy.json`), `.claude/` (except `lsp/`, listed above; this repository writes its own `settings.json` and `agents/`), `.codex/`, `.mcp.json`, `.qmd/` | Sextant's host, sandbox image, runtime launchers, monitor stack and session settings |
 | `scripts/` other than `pr-check.sh`, `dsh_profile_doctor.py`, `ecosystem_index.py`, `compact_context.py`, `role_launch.py`, `brief_check.py` | host doctors, key store and wrappers, trading data scripts |
 | `tests/proofs/test_foundation.py`, `test_delivery_rules.py`, `test_landing_practices.py`, `test_review_bots.py`, `test_start.py`, `test_workflows.py` | mixed or host-specific proofs: they assert Sextant's settings, documents, App file or WSL setup |
 | `uv.lock` | locks Sextant's trading dependencies; run `uv lock` after adoption |

@@ -226,5 +226,45 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true,
+    "compound-engineering@compound-engineering-plugin": true,
+    "claude-hud@claude-hud": true,
+    "pyright-lsp@sextant-lsp": true,
+    "typescript-lsp@sextant-lsp": true
+  },
+  "extraKnownMarketplaces": {
+    "superpowers-dev": {
+      "source": {
+        "source": "github",
+        "repo": "obra/superpowers",
+        "ref": "v7.0.2"
+      },
+      "autoUpdate": false
+    },
+    "compound-engineering-plugin": {
+      "source": {
+        "source": "github",
+        "repo": "EveryInc/compound-engineering-plugin",
+        "ref": "compound-engineering-v3.36.0"
+      },
+      "autoUpdate": false
+    },
+    "claude-hud": {
+      "source": {
+        "source": "github",
+        "repo": "jarrodwatts/claude-hud",
+        "ref": "v0.15.0"
+      },
+      "autoUpdate": false
+    },
+    "sextant-lsp": {
+      "source": {
+        "source": "directory",
+        "path": "./.claude/lsp"
+      },
+      "autoUpdate": false
+    }
   }
 }
