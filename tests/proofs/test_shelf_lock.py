@@ -23,12 +23,14 @@ GATE = ROOT / ".github/gate"
 # Every repository file the installer module reads at import, and every one parity-entry.py and
 # the three helpers it calls (ensure_workspace, _native, _quality_missing) read on a fresh hosted
 # profile: parity.py:24-25 (SPEC, LOCK), parity-entry.py:15-21 (the module, dsh-profile.json),
-# parity.py:_quality_missing (the quality bundle's package.json).
+# parity.py:331 (ensure_workspace seeds a profile that has no pnpm-workspace.yaml, as the hosted
+# job's fresh profile has none) and parity.py:_quality_missing (the quality bundle's package.json).
 READ_BY_THE_GATE = (
     ".github/gate/upstream/parity.py",
     ".github/gate/upstream/parity.json",
     ".claude/shelf.lock.json",
     ".github/gate/dsh-profile.json",
+    "deploy/wsl/dsh/pnpm-workspace.yaml",
     "config/dsh/quality/package.json",
 )
 # Repository directories parity-entry.py hands to native pnpm and dsh calls: the review shim's
@@ -78,6 +80,16 @@ def test_every_repository_path_the_gate_entry_reads_exists() -> None:
         assert f"{directory}/package.json" in HANDED_TO_NATIVE_CALLS
     missing = [p for p in (*READ_BY_THE_GATE, *HANDED_TO_NATIVE_CALLS) if not (ROOT / p).is_file()]
     assert not missing, f"the gate's dsh job reads files this tree lacks: {missing}"
+
+
+def test_a_fresh_hosted_profile_gets_the_seed_the_module_accepts(tmp_path: Path) -> None:
+    """The hosted job's profile holds only package.json when parity-entry.py runs."""
+    parity = _load_parity()
+    profile = tmp_path / "profiles/headless"
+    assert parity.ensure_workspace(profile, ROOT) == "written"
+    seeded = (profile / "pnpm-workspace.yaml").read_text()
+    assert seeded == (ROOT / "deploy/wsl/dsh/pnpm-workspace.yaml").read_text()
+    assert parity.ensure_workspace(profile, ROOT) == "unchanged"
 
 
 def _session_shelf_rows() -> str:
