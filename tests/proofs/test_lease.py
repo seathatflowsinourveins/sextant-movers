@@ -8,8 +8,10 @@ key; flock(2) (https://man7.org/linux/man-pages/man2/flock.2.html, both read 202
 lock to the open file description and releases it when its descriptors close.
 
 Every child is a fresh interpreter (`sys.executable -I`, or for the reference proof one whose
-`PYTHONPATH` names the reference) that reports on its stdout and waits on its stdin, so no step
-sleeps. Every path is under pytest's `tmp_path`. Scope names are made up.
+`PYTHONPATH` names the reference) that reports on its stdout and waits on its stdin, or a fork
+that reports on a pipe. Threads meet at events, barriers and a condition; interruptions are
+monkeypatched standard-library calls. No step sleeps or measures time. Every path is under
+pytest's `tmp_path`. Scope names are made up.
 """
 
 import errno
@@ -19,6 +21,7 @@ import os
 import select
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -91,25 +94,6 @@ def test_a_held_lock_fails_flock_with_blocking_io_error(tmp_path: Path) -> None:
         lease.close()
 
 
-def test_another_flock_error_closes_the_descriptor(tmp_path: Path, monkeypatch) -> None:
-    closed: list[int] = []
-    real_close = os.close
-
-    def no_locks(fd: int, operation: int) -> None:
-        raise OSError(errno.ENOLCK, "no locks available")
-
-    def recording_close(fd: int) -> None:
-        closed.append(fd)
-        real_close(fd)
-
-    monkeypatch.setattr(lease_module.fcntl, "flock", no_locks)
-    monkeypatch.setattr(lease_module.os, "close", recording_close)
-    lease = WriterLease(SCOPE, tmp_path, "w")
-    with pytest.raises(OSError, match="no locks"):
-        lease.acquire()
-    assert len(closed) == 1 and not lease.held and lease.token is None
-
-
 def test_the_token_is_set_while_held_and_cleared_after(tmp_path: Path) -> None:
     lease = WriterLease(SCOPE, tmp_path, "w")
     assert lease.token is None
@@ -178,6 +162,294 @@ def test_reserve_stream_yields_a_held_lease_and_closes_it(tmp_path: Path) -> Non
         with reserve_stream(SCOPE, tmp_path, existing_streams=0, source="s", writer="w") as again:
             raise RuntimeError("inside")
     assert not again.held
+
+
+# --- interruptions, threads and fork (the review's findings F1 to F7) ---------------------------
+
+
+def _track_descriptors(monkeypatch) -> tuple[list[int], list[int]]:
+    opened: list[int] = []
+    closed: list[int] = []
+    real_open, real_close = os.open, os.close
+
+    def recording_open(*args, **kwargs) -> int:
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def recording_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "close", recording_close)
+    return opened, closed
+
+
+def _raises(error: BaseException):
+    def fail(*args, **kwargs):
+        raise error
+
+    return fail
+
+
+def _interrupted_at_publication(*, after: bool) -> type[WriterLease]:
+    """A lease whose publication of its descriptor is interrupted, before or after the store."""
+
+    class Interrupted(WriterLease):
+        def __setattr__(self, name: str, value) -> None:
+            publishing = name == "fd" and value is not None
+            if publishing and not after:
+                raise KeyboardInterrupt
+            super().__setattr__(name, value)
+            if publishing:
+                raise KeyboardInterrupt
+
+    return Interrupted
+
+
+@pytest.mark.parametrize("failure", ["uuid4", "flock", "before-publish", "after-publish"])
+def test_a_failed_acquire_leaves_no_descriptor_and_no_holder(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    """F3: from the open to the publication, any failure closes what it opened."""
+    opened, closed = _track_descriptors(monkeypatch)
+    lease_class = WriterLease
+    if failure == "uuid4":
+        monkeypatch.setattr(lease_module, "uuid4", _raises(OSError("no entropy")))
+    elif failure == "flock":
+        no_locks = OSError(errno.ENOLCK, "no locks available")
+        monkeypatch.setattr(lease_module.fcntl, "flock", _raises(no_locks))
+    else:
+        lease_class = _interrupted_at_publication(after=failure == "after-publish")
+    lease = lease_class(SCOPE, tmp_path, "w")
+    with pytest.raises((OSError, KeyboardInterrupt)):
+        lease.acquire()
+    assert sorted(opened) == sorted(closed)
+    assert not lease.held and lease.token is None
+    monkeypatch.undo()
+    contender = WriterLease(SCOPE, tmp_path, "contender")
+    contender.acquire()
+    contender.close()
+
+
+def test_an_interrupted_close_never_closes_a_reused_descriptor(tmp_path: Path, monkeypatch) -> None:
+    """F2: the descriptor leaves the object before it is closed, so a retry closes nothing."""
+    first = WriterLease(SCOPE, tmp_path, "first")
+    first.acquire()
+    number = first.fd
+    real_close = os.close
+
+    def close_then_interrupt(fd: int) -> None:
+        real_close(fd)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "close", close_then_interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            first.close()
+    assert not first.held
+    second = WriterLease(SCOPE, tmp_path, "second")
+    second.acquire()
+    assert second.fd == number  # the kernel hands out the lowest free number again
+    first.close()
+    assert second.held
+    with pytest.raises(LeaseError, match="already has a writer"):
+        WriterLease(SCOPE, tmp_path, "third").acquire()
+    second.close()
+
+
+class _ProbeLock:
+    """Stands in for a lease's lock and counts each attempt to take it, under `progress`."""
+
+    def __init__(self, progress: threading.Condition) -> None:
+        self.lock, self.progress, self.attempts = threading.Lock(), progress, 0
+
+    def __enter__(self) -> None:
+        with self.progress:
+            self.attempts += 1
+            self.progress.notify_all()
+        self.lock.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self.lock.release()
+
+
+def test_two_threads_closing_at_once_close_the_descriptor_once(tmp_path: Path, monkeypatch) -> None:
+    """F2: the first close pauses inside os.close; the second must wait or find nothing."""
+    lease = WriterLease(SCOPE, tmp_path, "w")
+    lease.acquire()
+    number = lease.fd
+    progress = threading.Condition()
+    probe = _ProbeLock(progress)
+    lease._lock = probe  # type: ignore[assignment]
+    entered, go = threading.Event(), threading.Event()
+    calls: list[int] = []
+    errors: list[BaseException] = []
+    done = [0]
+    real_close = os.close
+
+    def paused_close(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 1:
+            entered.set()
+            assert go.wait(WAIT)
+        real_close(fd)
+
+    def close() -> None:
+        try:
+            lease.close()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            with progress:
+                done[0] += 1
+                progress.notify_all()
+
+    monkeypatch.setattr(os, "close", paused_close)
+    first = threading.Thread(target=close)
+    first.start()
+    assert entered.wait(WAIT)
+    second = threading.Thread(target=close)
+    second.start()
+    with progress:  # the second close is at the lease's lock, or (unguarded) already finished
+        assert progress.wait_for(lambda: probe.attempts >= 2 or done[0] >= 1, WAIT)
+    go.set()
+    first.join(WAIT)
+    second.join(WAIT)
+    monkeypatch.undo()
+    assert calls == [number] and errors == [] and not lease.held
+    other = WriterLease(SCOPE, tmp_path, "other")
+    other.acquire()
+    lease.close()
+    with pytest.raises(LeaseError, match="already has a writer"):
+        WriterLease(SCOPE, tmp_path, "third").acquire()
+    other.close()
+
+
+def test_two_threads_binding_at_once_bind_one_pacer(tmp_path: Path) -> None:
+    """F5: each bind reads the pacer and waits there until the other bind reads it too or waits
+    at the lease's lock, so an unguarded check-then-set would accept both."""
+    progress = threading.Condition()
+    probe = _ProbeLock(progress)
+    reads = [0]
+
+    class Watched(WriterLease):
+        @property
+        def pacer(self):  # type: ignore[override]
+            with progress:
+                value = self.watched  # what this check sees, read before it waits
+                reads[0] += 1
+                progress.notify_all()
+                assert progress.wait_for(lambda: reads[0] >= 2 or probe.attempts >= 2, WAIT)
+            return value
+
+        @pacer.setter
+        def pacer(self, value) -> None:
+            self.watched = value
+
+    lease = Watched(SCOPE, tmp_path, "w")
+    lease.acquire()
+    lease._lock = probe  # type: ignore[assignment]
+    barrier = threading.Barrier(2)
+    accepted: list[object] = []
+    refused: list[object] = []
+
+    def bind(pacer: object) -> None:
+        barrier.wait(WAIT)
+        try:
+            lease.bind_pacer(pacer)
+            accepted.append(pacer)
+        except LeaseError:
+            refused.append(pacer)
+
+    threads = [threading.Thread(target=bind, args=(object(),)) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(WAIT)
+    assert len(accepted) == 1 and len(refused) == 1 and lease.watched is accepted[0]
+    lease.close()
+
+
+def test_an_interrupt_right_after_the_reservation_acquires_releases_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """F4: the reservation's cleanup covers its own acquire."""
+    real_acquire = WriterLease.acquire
+
+    def acquire_then_interrupt(self: WriterLease) -> None:
+        real_acquire(self)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(WriterLease, "acquire", acquire_then_interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            with reserve_stream(SCOPE, tmp_path, existing_streams=0, source="s", writer="w"):
+                pytest.fail("the block must not run")
+    contender = WriterLease(SCOPE, tmp_path, "contender")
+    contender.acquire()
+    contender.close()
+
+
+def test_a_forked_child_holds_nothing_and_the_parent_close_releases(tmp_path: Path) -> None:
+    """F1: ownership ends at the process boundary. The child's inherited copy is closed at fork,
+    and closing a copy of the open file description does not release the parent's lock."""
+    lease = WriterLease(SCOPE, tmp_path, "parent")
+    lease.acquire()
+    report_r, report_w = os.pipe()
+    go_r, go_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # the child: report, then stay alive until the parent says go
+        status = 1
+        try:
+            facts = [lease.held, lease.token is None, lease.fd is None]
+            for use in (lambda: lease.bind_pacer(object()), lease.acquire):
+                try:
+                    use()
+                    facts.append(False)
+                except LeaseError:
+                    facts.append(True)
+            os.write(report_w, repr(facts).encode() + b"\n")
+            os.read(go_r, 1)
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(report_w)
+    os.close(go_r)
+    try:
+        assert select.select([report_r], [], [], WAIT)[0], "the child did not answer"
+        assert os.read(report_r, 200) == b"[False, True, True, True, True]\n"
+        contender = WriterLease(SCOPE, tmp_path, "contender")
+        with pytest.raises(LeaseError, match="already has a writer"):
+            contender.acquire()
+        lease.close()
+        contender.acquire()  # the child is alive, waiting on its pipe
+        assert os.waitpid(pid, os.WNOHANG) == (0, 0)
+        contender.close()
+    finally:
+        os.write(go_w, b"x")
+        os.close(go_w)
+        os.close(report_r)
+        _, status = os.waitpid(pid, 0)
+        lease.close()
+    assert os.waitstatus_to_exitcode(status) == 0
+
+
+@pytest.mark.parametrize(
+    ("broker", "account"), [(1, "a"), ("b", 2), (b"b", "a"), ("b", None), (None, None)]
+)
+def test_broker_and_account_must_be_strings(broker, account) -> None:
+    """F6: a non-string could format to a different key on each acquire."""
+    with pytest.raises(ValueError, match="must be strings"):
+        AccountScope(broker, account)
+
+
+def test_a_colon_in_the_broker_is_refused_and_the_key_stays_the_references() -> None:
+    """F7: with no colon in the broker, `broker:account` names one pair, in the reference's form."""
+    with pytest.raises(ValueError, match="colon"):
+        AccountScope("MADE_UP:BROKER", "account")
+    assert AccountScope("MADE_UP", "BROKER:account").key == "MADE_UP:BROKER:account"
 
 
 # --- across processes --------------------------------------------------------------------------
