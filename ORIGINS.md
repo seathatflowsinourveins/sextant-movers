@@ -99,10 +99,12 @@ Every file in this tree and where it comes from. Source: Sextant, `main` at `3b5
 | `pyproject.toml` | `pyproject.toml` | `23c4e3356c8b` | generalised | trading dependencies, extras, uv source and build system removed; tool settings and dev pins kept |
 | `renovate.json` | `renovate.json` | `ba9e81e46c63` | verbatim |  |
 | `scripts/clone-upstreams.sh` | new: based on the lead's three clone scripts of 2026-11-11 (private scratch), private snapshots removed | | new |  |
+| `scripts/compact_context.py` | `scripts/compact_context.py` | `f9edc9d1810e` | generalised | at `0a4d42b2`: four roles; state folder from `MOVERS_STATE_DIR`, files `MOVERS-<ROLE>-STATE.md`, shown by name never value; unset prints one line; snapshot lookup removed; private ruling citations removed |
 | `scripts/dsh_profile_doctor.py` | `scripts/dsh_profile_doctor.py` | `52a1a182a384` | verbatim |  |
 | `scripts/ecosystem_index.py` | `scripts/ecosystem_index.py` | `4822dbcd78e5` | verbatim |  |
 | `scripts/pr-check.sh` | `scripts/pr-check.sh` | `5a0d45de2450` | verbatim |  |
 | `tests/proofs/public-gate.test.cjs` | `tests/proofs/public-gate.test.cjs` | `3f290535904b` | verbatim |  |
+| `tests/proofs/test_compact_context.py` | `tests/proofs/test_compact_context.py` | `2be3a041bfc9` | generalised | at `0a4d42b2`: state folder by variable; unset and value-never-printed proofs added; ADR and shelf-note assertions removed |
 | `tests/proofs/test_manifest_union.py` | `tests/proofs/test_manifest_union.py` | `64b3067c39a9` | verbatim |  |
 | `tests/proofs/test_public_gate.py` | `tests/proofs/test_public_gate.py` | `5e5b46272693` | verbatim |  |
 | `tests/repo/test_budgets.py` | `tests/repo/test_budgets.py` | `4d940ee42bb0` | generalised | the source-cap raise history comment replaced by two lines; values unchanged |
@@ -118,6 +120,6 @@ Every file in this tree and where it comes from. Source: Sextant, `main` at `3b5
 | `.github/workflows/scoreboard.yml` | builds Sextant's devcontainer image, which is not included |
 | `.github/rulesets/live.json`, `ledger.json`; `paper` and `live` environments | Sextant's live-trading and ledger branches |
 | `.devcontainer/` (except `agents/`), `deploy/` (except `openviking/pins.json` and `upkeep/`), `.claude/`, `.codex/`, `.mcp.json`, `.qmd/` | Sextant's host, sandbox image, runtime launchers, monitor stack and session settings |
-| `scripts/` other than `pr-check.sh`, `dsh_profile_doctor.py`, `ecosystem_index.py` | host doctors, key store and wrappers, role launchers, trading data scripts |
+| `scripts/` other than `pr-check.sh`, `dsh_profile_doctor.py`, `ecosystem_index.py`, `compact_context.py` | host doctors, key store and wrappers, role launchers, trading data scripts |
 | `tests/proofs/test_foundation.py`, `test_delivery_rules.py`, `test_landing_practices.py`, `test_review_bots.py`, `test_start.py`, `test_workflows.py` | mixed or host-specific proofs: they assert Sextant's settings, documents, App file or WSL setup |
 | `uv.lock` | locks Sextant's trading dependencies; run `uv lock` after adoption |
