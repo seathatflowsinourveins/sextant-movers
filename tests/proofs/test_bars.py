@@ -59,7 +59,7 @@ REFERENCE_BLOBS = {  # git blob ids of the reference files at the pinned commit
     "data/alpaca_history.py": "d1fc0542a33008f19a3a7d6d2c4d25f0f59eb63b",
 }
 # SHA-256 of this side's canonical parity answers; the `local` proof shows the reference gives them.
-ANSWERS_DIGEST = "0"
+ANSWERS_DIGEST = "e5c298fa92b53006d95d574dacf478fc73430df0736eda6ead479fe004960629"
 
 
 @pytest.fixture(autouse=True)
@@ -208,7 +208,8 @@ def test_nanos_reads_a_naive_datetime_in_the_host_time_zone() -> None:
 
 def test_bar_reads_the_sdk_model_built_from_a_raw_mapping() -> None:
     bar = _bar("ZZQAAA", AlpacaBar("ZZQAAA", raw(0)))
-    assert bar == Bar(**GOOD | {"open": D("10.0")}, vw=D("10.1"))
+    want: dict[str, Any] = GOOD | {"open": D("10.0"), "vw": D("10.1")}
+    assert bar == Bar(**want)
     assert _bar("ZZQAAA", AlpacaBar("ZZQAAA", raw(1, vw=None))).vw is None
     with pytest.raises(ValueError) as caught:
         _bar("ZZQAAA", AlpacaBar("ZZQAAA", raw(0, n=None)))
@@ -217,7 +218,7 @@ def test_bar_reads_the_sdk_model_built_from_a_raw_mapping() -> None:
         AlpacaBar("ZZQAAA", {k: v for k, v in raw(0).items() if k != "n"})
     fraction = AlpacaBar("ZZQAAA", raw(0) | {"v": 1200.75, "n": 7.5})
     assert (_bar("ZZQAAA", fraction).volume, _bar("ZZQAAA", fraction).trades) == (1200, 7)  # kept
-    with pytest.raises(ValueError, match="^A bar starts on a whole minute$"):
+    with pytest.raises(ValueError, match=r"^A bar starts on a whole minute$"):
         _bar("ZZQAAA", AlpacaBar("ZZQAAA", raw(0) | {"t": "2026-01-02T14:30:01Z"}))
 
 
@@ -227,7 +228,7 @@ def scripted_pacer(rate: Decimal, *times: float) -> tuple[Pacer, list[float]]:
 
 
 def test_the_pacer_sleeps_only_the_remainder_of_its_interval() -> None:
-    pacer, sleeps = scripted_pacer(D(120), 100.0, 100.0, 100.125, 100.5, 101.0, 101.0, 102.5)
+    pacer, sleeps = scripted_pacer(D(120), 100.0, 100.0, 100.125, 100.5, 101.0, 101.0, 102.5, 102.5)
     assert pacer.interval == 0.5
     pacer.wait()
     assert sleeps == []
@@ -257,8 +258,8 @@ def test_the_rate_is_required_and_a_non_decimal_fails_on_its_first_method() -> N
 def request(*symbols: str) -> StockBarsRequest:
     minute = TimeFrame.Minute
     assert isinstance(minute, TimeFrame)
-    window = {"start": START, "end": START + timedelta(minutes=5)}
-    return StockBarsRequest(symbol_or_symbols=list(symbols), timeframe=minute, **window)
+    end = START + timedelta(minutes=5)
+    return StockBarsRequest(symbol_or_symbols=list(symbols), timeframe=minute, start=START, end=end)
 
 
 def test_the_paced_client_hands_its_arguments_to_the_sdk_and_keeps_the_hook_signature() -> None:
@@ -421,7 +422,11 @@ def answer_all(m: Any) -> dict[str, Any]:
 
     rng = random.Random(20261111)  # noqa: S311 (seeded synthetic values, not a secret)
     start = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
-    zones = [UTC, timezone(timedelta(hours=5, minutes=30)), timezone(-timedelta(hours=4))]
+    zones: list[Any] = [
+        UTC,
+        timezone(timedelta(hours=5, minutes=30)),
+        timezone(-timedelta(hours=4)),
+    ]
     zones.append(ZoneInfo("America/New_York"))
 
     def show(v: Any) -> Any:
