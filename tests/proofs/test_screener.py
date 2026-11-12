@@ -12,7 +12,7 @@ import socket
 from dataclasses import FrozenInstanceError, fields
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 from alpaca.common.exceptions import APIError
@@ -93,11 +93,11 @@ class Session:
 
 def client(*answers: tuple[int, Any], raw_data: bool = False) -> tuple[Any, Session, list[str]]:
     events: list[str] = []
-    paced = m.PacedScreener(
+    paced: Any = m.PacedScreener(
         pacer=Count(events),
         api_key="key-id",
-        secret_key="secret-key",
-        raw_data=raw_data,  # noqa: S106
+        secret_key="secret-key",  # noqa: S106 (SDK's explicit test placeholder)
+        raw_data=raw_data,
     )
     paced._session = session = Session(answers, events)
     return paced, session, events
@@ -129,6 +129,7 @@ def test_two_sdk_reads_keep_paths_queries_order_pacing_and_models(
         )
     )
     assert events == ["wait", "wire", "wait", "wire"]
+    assert session.seen[1][2]["by"] is by  # the SDK leaves the str enum for requests to encode
     assert got.gainers[0].symbol == "ZZAAA" and active.most_actives[0].symbol == "ZZBBB"
     assert got.last_updated == datetime.fromisoformat(MOVERS_TIME[:26] + "+05:30")
     assert got.last_updated.utcoffset() == timedelta(hours=5, minutes=30)
@@ -288,7 +289,8 @@ def test_cross_check_keeps_vendor_order_positions_identities_and_generation_byte
             assert isinstance(pair, m.Pair)
             assert pair.position == position and pair.entry is entry
             assert pair.row is rows.get(entry.symbol)
-    assert report.gainers[0].row is rows["ZZCCC"] and report.gainers[0].row.rank is None
+    assert report.gainers[0].row is rows["ZZCCC"]
+    assert rows["ZZCCC"].rank is None
     assert report.gainers[2].row is None
     assert report.gainers[1].row is report.losers[1].row is report.actives[0].row
     assert [row.symbol for row in report.unlisted] == ["ZZDDD", "ZZEEE"]
@@ -380,16 +382,26 @@ def test_screener_stays_beside_the_rank_and_out_of_both_contracts() -> None:
 
 
 def test_sdk_signatures_request_fields_and_paced_hook_at_the_pin() -> None:
-    for method in (ScreenerClient.get_market_movers, ScreenerClient.get_most_actives):
+    for method, request_type in (
+        (ScreenerClient.get_market_movers, MarketMoversRequest),
+        (ScreenerClient.get_most_actives, MostActivesRequest),
+    ):
         assert list(inspect.signature(method).parameters) == ["self", "request_params"]
+        assert get_type_hints(method)["request_params"] is request_type
     assert set(MarketMoversRequest.model_fields) == {"top", "market_type"}
     assert set(MostActivesRequest.model_fields) == {"top", "by"}
     assert MarketMoversRequest.model_fields["market_type"].annotation is MarketType
     assert MostActivesRequest.model_fields["by"].annotation is MostActivesBy
+    assert MarketMoversRequest.model_fields["top"].annotation is int
+    assert MostActivesRequest.model_fields["top"].annotation is int
     assert MostActivesRequest(top=7, by=MostActivesBy.TRADES).to_request_fields() == {
         "top": 7,
         "by": "trades",
     }
+    assert (
+        MostActivesRequest(top=7, by=MostActivesBy.TRADES).to_request_fields()["by"]
+        is MostActivesBy.TRADES
+    )
     assert MarketMoversRequest(top=8, market_type=MarketType.STOCKS).to_request_fields() == {
         "top": 8,
         "market_type": "stocks",
