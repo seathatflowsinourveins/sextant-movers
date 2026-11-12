@@ -7,6 +7,7 @@ at 06562bec0898a7203f4eaf69086ced83d2477e6b, excluding the carried view.
 import ast
 import hashlib
 import inspect
+import json
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
@@ -27,6 +28,7 @@ from sextant_movers.tradingview import host as host_module
 from sextant_movers.tradingview import service as module
 from sextant_movers.tradingview.bridge import DisplayBounds
 from sextant_movers.tradingview.host import BarFidelityHost
+from sextant_movers.tradingview.inputs import InputError, read_research_inputs
 from sextant_movers.tradingview.producer import Clocks
 
 
@@ -547,3 +549,196 @@ def test_host_statements_unchanged_and_header_documents_caller_rules():
     doc = inspect.getdoc(host_module)
     assert doc is not None
     assert all(word in doc for word in ("discard", "replay", "repeat", "same market clock"))
+
+
+# Retained edges and fault observations; this suffix is independently cuttable.
+
+
+def test_same_digest_reader_refusal_keeps_pointer_but_rewrites_live_files(kw, monkeypatch):
+    """Read-back refusal retains the pointer after writing the repeated live generation."""
+    receipt = tick(kw)
+    before = visible(kw["unit_dir"])
+    monkeypatch.setattr(module, "read_research_inputs", Mock(side_effect=OSError("zz-read-fault")))
+    mapping = {name: "ZZY:" + name for name in kw["symbols"]}
+    with pytest.raises(OSError, match="zz-read-fault"):
+        tick(kw, symbol_map=mapping)
+    after = visible(kw["unit_dir"])
+    assert after[0] == before[0]
+    assert {name for name in before[1] if before[1][name] != after[1][name]} == {
+        "top100.json",
+        "display-lists.json",
+    }
+    generations = list((kw["unit_dir"].parent / "unit.generations").iterdir())
+    assert len(generations) == 1 and generations[0].name == receipt["generation_sha256"]
+
+
+def test_missing_prior_close_is_key_error_not_caught_as_value_error(kw):
+    with pytest.raises(KeyError) as caught:
+        tick(kw, prior_closes={})
+    assert caught.value.args == (NAMES[0],)
+    assert not isinstance(caught.value, ValueError)
+
+
+def test_unasked_symbol_reaches_host_refusal(kw):
+    with pytest.raises(ValueError, match=r"^bar outside the universe: ZZUNASKED$"):
+        tick(kw, source=Source([bar(symbol="ZZUNASKED")]))
+
+
+def test_repeated_bar_skipped_zero_volume_not_ingested_and_open_minute_dropped(kw):
+    bars = list(kw["source"].bars)
+    bars[0] = replace(bars[0], volume=0)
+    source = Source([*reversed(bars), bars[1], bar(8)])
+    receipt = tick(kw, source=source)
+    assert receipt["bars"] == 25 and receipt["ingested"] == 23
+
+
+def test_out_of_order_bars_replay_to_same_documents(kw):
+    tick(kw)
+    before = visible(kw["unit_dir"])
+    tick(kw, source=Source(reversed(kw["source"].bars)))
+    assert visible(kw["unit_dir"]) == before
+
+
+@pytest.mark.parametrize("where", ["reader", "replace"])
+def test_fault_after_files_retains_old_unit_and_orphan_generation(kw, monkeypatch, where):
+    tick(kw)
+    before = visible(kw["unit_dir"])
+    parent = kw["unit_dir"].parent / "unit.generations"
+    move = module.os.replace
+
+    def fail(*a, **k):
+        raise OSError("zz-injected")
+
+    def replace_pointer(src, dst):
+        if dst == kw["unit_dir"]:
+            fail()
+        return move(src, dst)
+
+    if where == "reader":
+        monkeypatch.setattr(module, "read_research_inputs", fail)
+    else:
+        monkeypatch.setattr(module.os, "replace", replace_pointer)
+    with pytest.raises(OSError, match="zz-injected"):
+        tick(kw, epoch="zz-second")
+    assert visible(kw["unit_dir"]) == before and len(list(parent.iterdir())) == 2
+    assert all(len(list(p.iterdir())) == 3 for p in parent.iterdir())
+    read_research_inputs(kw["unit_dir"], now=unix_nanos_to_dt(kw["now_ns"]), max_age=1200)
+    assert (kw["unit_dir"].parent / ".unit.pointer").is_symlink() is (where == "replace")
+
+
+def test_existing_digest_rewritten_crash_pointer_removed_and_dangling_unit_replaced(kw):
+    first = tick(kw)
+    unit = kw["unit_dir"]
+    (unit / "top100.json").write_text("zz-corrupt")
+    pointer = unit.parent / ".unit.pointer"
+    pointer.write_text("zz-crash")
+    assert tick(kw) == first
+    assert not pointer.exists() and json.loads((unit / "top100.json").read_text())
+    unit.unlink()
+    unit.symlink_to("zz-missing")
+    assert not unit.exists() and unit.is_symlink()
+    assert tick(kw) == first and unit.exists()
+    assert len(list((unit.parent / "unit.generations").iterdir())) == 1
+
+
+def test_old_generations_never_removed_after_three_ticks(kw):
+    for i in range(3):
+        tick(kw, epoch=f"zz-epoch-{i}")
+    assert len(list((kw["unit_dir"].parent / "unit.generations").iterdir())) == 3
+
+
+@pytest.mark.parametrize("age", [1, 2, 3])
+def test_readback_uses_minimum_of_caller_and_bridge_narrowed_age(kw, age):
+    # Producer expiry narrows the projected bound to two seconds.
+    options = dict(
+        now_ns=kw["now_ns"],
+        clock=lambda: kw["now_ns"] + NS,
+        max_age=age,
+        registry=registry(input_max_age_s=10, heartbeat_max_age_s=10),
+        bounds=DisplayBounds(D("0.1"), D(2), 2),
+    )
+    if age == 1:
+        with pytest.raises(InputError, match="Research generation expired; lists NOT synced"):
+            tick(kw, **options)
+    else:
+        tick(kw, **options)
+        doc = json.loads((kw["unit_dir"] / "display-lists.json").read_text())
+        assert doc["bounds"]["max_age_s"] == 2
+
+
+def test_nanosecond_before_segment_end_publishes_latest_complete_minute(kw):
+    segment = replace(kw["segment"], end_ns=START + 9 * MINUTE_NS)
+    receipt = tick(
+        kw,
+        segment=segment,
+        now_ns=segment.end_ns - 1,
+        registry=registry(input_max_age_s=120, heartbeat_max_age_s=120, generation_max_age_s=120),
+    )
+    assert receipt["publish_clock_ns"] == segment.end_ns - 1
+
+
+@pytest.mark.parametrize(
+    "key", ["sip_authority", "mapping_source", "reference_source", "asset_source"]
+)
+def test_empty_source_text_delegated_without_tick_validation(kw, key):
+    if key == "sip_authority":
+        with pytest.raises(ValueError, match="fresh slot-2 SIP publisher, entitlement"):
+            tick(kw, **{key: ""})
+    elif key == "mapping_source":
+        with pytest.raises(ValueError, match="explicit integer clocks and source required"):
+            tick(kw, **{key: ""})
+    elif key == "reference_source":
+        with pytest.raises(
+            ValueError, match="official split-adjusted completed-close source required"
+        ):
+            tick(kw, **{key: ""})
+    else:
+        tick(kw, **{key: ""})
+
+
+def test_source_texts_in_files_and_send_full_and_top_types(kw):
+    tick(kw)
+    j5 = kw["j5_path"].read_text()
+    documents = "".join(p.read_text() for p in kw["unit_dir"].iterdir())
+    for text in (AUTH, "zz-mapping", "zz-reference", "zz-asset"):
+        assert text in j5
+    assert all(text not in documents for text in (AUTH, "zz-mapping", "zz-reference", "zz-asset"))
+    sent = kw["send"].calls
+    assert len(sent) == 2
+    assert [t.metadata["view"] for t, _ in sent] == ["full", "top"]
+    assert all(type(data).__name__ == "CustomData" for _, data in sent)
+
+
+@pytest.mark.parametrize("where", ["document", "bridge", "reader", "unit", "replace"])
+def test_send_already_observed_when_display_publication_refused(kw, monkeypatch, where):
+    move = module.os.replace
+
+    def fail(*a, **k):
+        raise ValueError("zz-display-refusal")
+
+    def replace_pointer(src, dst):
+        if dst == kw["unit_dir"]:
+            fail()
+        return move(src, dst)
+
+    if where == "document":
+        kw["symbol_map"] = dict.fromkeys(NAMES)
+    elif where in {"bridge", "reader"}:
+        monkeypatch.setattr(
+            module,
+            {"bridge": "project_display_unit", "reader": "read_research_inputs"}[where],
+            fail,
+        )
+    elif where == "unit":
+        kw["unit_dir"].write_text("zz-existing")
+    else:
+        monkeypatch.setattr(module.os, "replace", replace_pointer)
+    with pytest.raises(ValueError):
+        tick(kw)
+    assert len(kw["send"].calls) == 2
+
+
+def test_no_tick_lock_shared_pointer_has_no_concurrency_guard():
+    source = inspect.getsource(module)
+    assert not any(token in source for token in ("flock", "Lock(", "acquire(", "uuid", "mktemp"))
+    assert 'f".{unit_dir.name}.pointer"' in source
