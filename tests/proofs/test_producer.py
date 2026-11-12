@@ -1094,7 +1094,8 @@ def producer_answers(tmp_path: Path) -> list[Any]:
 
 def producer_counts(answers: list[Any]) -> dict[str, int]:
     steps = [s for run in answers for s in run]
-    documents = [json.loads(s[1]) for s in steps if s[0] == "build_unit"]
+    # A raised call is recorded as a list, not as a document's text: it counts under "raises".
+    documents = [json.loads(s[1]) for s in steps if s[0] == "build_unit" and isinstance(s[1], str)]
     return {
         "sessions": len(answers),
         "calls": len(steps),
@@ -1102,6 +1103,11 @@ def producer_counts(answers: list[Any]) -> dict[str, int]:
         "unavailable": sum(d["status"] == "unavailable" for d in documents),
         "raises": sum(isinstance(s[1], list) and s[1][0] == "raised" for s in steps),
     }
+
+
+def test_counts_take_a_raised_build_unit():
+    counts = producer_counts([[["build_unit", ["raised", "ValueError", "zz"], None]]])
+    assert counts == {"sessions": 1, "calls": 1, "fresh": 0, "unavailable": 0, "raises": 1}
 
 
 PRODUCER_DIGEST = "636612c83a0c9b1c1e11e40651ea7ae04756cc22cde37f087504e0cc2888fc94"
