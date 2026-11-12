@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import reference_child as child
 from test_publisher import ASSET, NAMES, NS, REFS, START, Send, ready, registry, tick
 
 from sextant_movers.ranking import engine, publisher
@@ -785,25 +786,13 @@ print("PARITY " + json.dumps({
 @pytest.mark.local
 def test_publication_parity_with_the_reference_in_a_child_interpreter() -> None:
     import inspect
-    import os
 
     import nautilus_trader
     import nautilus_trader.model as nt
 
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON for parity")
+    src, python = child.reference()
     script = "from typing import Any\n" + inspect.getsource(publish_answers) + PUBLISH_PARITY
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", script],
-        env={"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)},
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
-    line = next(s for s in done.stdout.splitlines() if s.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script)
     here = [list(sys.version_info[:3]), nautilus_trader.__version__]
     assert here == theirs["versions"], (
         f"version mismatch: here {here}, reference {theirs['versions']}"
