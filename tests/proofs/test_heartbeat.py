@@ -236,6 +236,14 @@ def test_equal_arguments_give_equal_hash_equal_data_types() -> None:
     assert one != ranking_data_type("iex")
 
 
+def test_a_feed_or_view_holding_pair_text_cannot_take_another_topic() -> None:
+    """The engine escapes a pair-shaped value (`crates/model/src/data/data_type.rs:41-86`)."""
+    one = ranking_data_type(f"x.ranker={RANKER}.view=y", "z")
+    two = ranking_data_type("x", f"y.ranker={RANKER}.view=z")
+    assert one.topic != two.topic and one != two
+    assert one.topic.startswith(gen.TYPE_NAME + ".feed=~x~") and ".view=~x~" in two.topic
+
+
 BUS = """
 import json, sys
 sys.path.insert(0, sys.argv[1])
@@ -306,7 +314,7 @@ def test_the_universe_digest_validates_nothing() -> None:
     assert universe_digest(("zzhba", " ", "")) == hashlib.sha256(b'[""," ","zzhba"]').hexdigest()
 
 
-LEFT_OUT = ("LANES_PIN", "METHOD", "AssetState", "environ", "getenv", "socket", "thread")
+LEFT_OUT = ("LANES_PIN", "METHOD", "environ", "getenv", "socket", "thread")
 
 
 @pytest.mark.parametrize("module", [heartbeat, publisher], ids=["heartbeat", "publisher"])

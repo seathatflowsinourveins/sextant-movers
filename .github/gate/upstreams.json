@@ -85,11 +85,13 @@
     },
     "setup-uv": {
       "repository": "astral-sh/setup-uv",
-      "version": "v10.3.2",
-      "sha": "07a047e608db84b3d8c06cd9a7c7dcc9c355c18e",
-      "published_at": "2026-10-22T08:47:11Z",
+      "version": "v10.3.3",
+      "sha": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
+      "published_at": "2026-10-28T14:35:19Z",
+      "read_date": "2026-11-11",
       "paths": [
-        "action.yml, enable-cache input"
+        "action.yml, enable-cache and save-cache inputs",
+        "docs/caching.md:34-45,141-147"
       ]
     },
     "ruleset-recipes": {

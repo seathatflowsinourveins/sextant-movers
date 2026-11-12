@@ -110,6 +110,44 @@ def test_ci_runs_the_complete_check_without_repository_secrets() -> None:
     assert "enable-cache: true" in text and "package-manager-cache: false" in text
 
 
+def _setup_uv_steps() -> dict[str, list[tuple[str, dict]]]:
+    found: dict[str, list[tuple[str, dict]]] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for name, job in yaml.safe_load(path.read_text())["jobs"].items():
+            for step in job["steps"]:
+                if step.get("uses", "").startswith("astral-sh/setup-uv@"):
+                    found.setdefault(path.name, []).append((name, step))
+    return found
+
+
+def test_setup_uv_runs_at_the_recorded_pin_in_every_workflow() -> None:
+    """The pin record is .github/gate/upstreams.json; each `uses:` line names its version."""
+    record = json.loads((ROOT / ".github/gate/upstreams.json").read_text())
+    pin = record["components"]["setup-uv"]
+    steps = _setup_uv_steps()
+    assert set(steps) == {"ci.yml", "consolidation.yml", "gate.yml"}
+    for name, found in steps.items():
+        for job, step in found:
+            assert step["uses"] == "astral-sh/setup-uv@" + pin["sha"], (name, job)
+        lines = (WORKFLOWS / name).read_text().splitlines()
+        for line in (line for line in lines if "astral-sh/setup-uv@" in line):
+            assert re.search(rf"# {re.escape(pin['version'])}(,|$)", line), (name, line)
+
+
+def test_the_uv_cache_is_on_in_ci_saved_by_one_job_and_off_elsewhere() -> None:
+    """astral-sh/setup-uv `docs/caching.md`: `enable-cache` and `save-cache` at the pin."""
+    steps = _setup_uv_steps()
+    saving = []
+    for job, step in steps["ci.yml"]:
+        assert step["with"]["enable-cache"] is True, job
+        if step["with"].get("save-cache") is not False:
+            saving.append(job)
+    assert saving == ["tests"]
+    for name in ("consolidation.yml", "gate.yml"):
+        for job, step in steps[name]:
+            assert step["with"] == {"enable-cache": False}, (name, job)
+
+
 def test_fork_pr_workflows_never_bind_repository_secrets() -> None:
     """GitHub events-that-trigger-workflows#pull_request, fork PR secrets, read 2026-11-09.
 
