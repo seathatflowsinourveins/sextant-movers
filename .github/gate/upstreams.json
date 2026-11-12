@@ -89,6 +89,7 @@
       "sha": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
       "published_at": "2026-10-28T14:35:19Z",
       "read_date": "2026-11-11",
+      "cooldown": "14 days from published_at (.github/dependabot.yml, github-actions, cooldown default-days 14), measured for this block alone: the bump was opened 2026-11-11T23:49:07Z, 14 days and 9 hours after published_at. The top-level read_date and new_pin_cutoff date the 2026-11-09 pins and their exclusions; this block does not advance them",
       "paths": [
         "action.yml, enable-cache and save-cache inputs",
         "docs/caching.md:34-45,141-147"
