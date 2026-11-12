@@ -415,6 +415,21 @@ def test_sdk_screener_import_is_not_an_import_of_our_screener(tmp_path: Path) ->
     assert not imports_screener(path)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import sextant_movers.ranking.screener\n",
+        "import sextant_movers.ranking.screener as shown\n",
+        "from sextant_movers.ranking import screener\n",
+        "from sextant_movers.ranking.screener import read\n",
+    ],
+)
+def test_an_import_of_our_screener_is_seen(tmp_path: Path, line: str) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(line)
+    assert imports_screener(path)
+
+
 def test_screener_stays_beside_the_rank_and_out_of_both_contracts() -> None:
     own_path = Path(m.__file__)
     for path in (ROOT / "src" / "sextant_movers").rglob("*.py"):
