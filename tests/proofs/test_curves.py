@@ -596,11 +596,8 @@ def test_seeded_parity_with_the_reference_in_a_child_interpreter() -> None:
     assert theirs["representation"] == [sys.byteorder, array("q").itemsize, array("i").itemsize]
     assert theirs["answers"] == seeded_answers(cases)
     expected = sum(len(c["sessions"]) == 5 for c in cases)
-    if theirs["import_error"] is None:
-        assert theirs["streamed"] == expected
-    else:
-        print("reference prestage import: " + theirs["import_error"])
-        assert theirs["streamed"] == 0
+    assert theirs["import_error"] is None, theirs["import_error"]
+    assert theirs["streamed"] == expected
     print(f"\nPython here/reference: {platform.python_version()}/{theirs['python']}")
     queries = sum(len(c["queries"]) for c in cases)
     arrays = 2 * sum(len(c["sessions"]) for c in cases)
