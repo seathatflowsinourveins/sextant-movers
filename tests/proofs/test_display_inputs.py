@@ -9,7 +9,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from nautilus_trader.core.datetime import dt_to_unix_nanos
@@ -20,7 +20,7 @@ from sextant_movers.tradingview import inputs as reader
 
 FILES = ("top100.json", "focus.json", "display-lists.json")
 CLOCK = "2026-11-11T15:00:00.123456789Z"
-NOW = Timestamp("2026-11-11T15:00:30.123456789Z")
+NOW = cast(datetime, Timestamp("2026-11-11T15:00:30.123456789Z"))
 NS = 1_000_000_000
 UNAVAILABLE = "Research generation is unavailable; lists NOT synced"
 EXPIRED = "Research generation expired; lists NOT synced"
@@ -95,7 +95,7 @@ def write_unit(path: Path, docs: dict[str, Any]) -> Path:
     return path
 
 
-def read(path: Path, docs=None, *, now=NOW, max_age=1200):
+def read(path: Path, docs=None, *, now: Any = NOW, max_age=1200):
     return reader.read_research_inputs(
         write_unit(path, docs or documents()), now=now, max_age=max_age
     )
@@ -164,7 +164,11 @@ def test_each_clock_order_and_future_nanosecond(tmp_path, clocks) -> None:
 
 @pytest.mark.parametrize(("delta", "expired"), [(NS - 1, False), (NS, True)])
 def test_age_exact_bound_and_one_nanosecond_inside(tmp_path, delta, expired) -> None:
-    at = Timestamp(CLOCK) + timedelta(seconds=1) if expired else Timestamp(CLOCK) + delta
+    at = (
+        Timestamp(CLOCK) + timedelta(seconds=1)
+        if expired
+        else Timestamp(reader._ns(CLOCK) + delta, unit="ns", tz=UTC)
+    )
     if expired:
         refusal(tmp_path, documents(), EXPIRED, now=at, max_age=1)
     else:
@@ -175,7 +179,7 @@ def test_age_exact_bound_and_one_nanosecond_inside(tmp_path, delta, expired) -> 
 
 @pytest.mark.parametrize(("delta", "expired"), [(600 * NS, False), (600 * NS + 1, True)])
 def test_snapshot_lag_at_bound_and_one_nanosecond_past(tmp_path, delta, expired) -> None:
-    at = Timestamp(CLOCK) + delta
+    at = Timestamp(reader._ns(CLOCK) + delta, unit="ns", tz=UTC)
     docs = documents(
         clocks={"as_of": at.isoformat(), "generated_at": at.isoformat()}, bounds={"max_age_s": 1200}
     )
@@ -358,10 +362,10 @@ def test_each_member_refusal(tmp_path, rows, reason) -> None:
 
 @pytest.mark.parametrize("prefix", ["SMART", "IB", "IBKR", "ALPACA"])
 def test_each_refused_prefix_refuses_entire_unit(tmp_path, prefix) -> None:
-    refusal(tmp_path, documents(focus=[member(1, prefix)]), MAPPING)
+    refusal(tmp_path, documents(focus=[member(3, prefix)]), MAPPING)
 
 
-@pytest.mark.parametrize("venue", ["ZZY", None])
+@pytest.mark.parametrize("venue", ["ZZX_ALT", None])
 def test_cross_list_symbol_mappings_must_match(tmp_path, venue) -> None:
     refusal(
         tmp_path, documents(focus=[member(0, venue)]), "Cross-list TradingView mappings disagree"
@@ -448,7 +452,7 @@ def test_each_envelope_session_date_refuses(tmp_path, file) -> None:
 
 
 def test_each_clock_session_at_overnight_boundary() -> None:
-    now = Timestamp("2026-11-12T01:00:00Z")
+    now = cast(datetime, Timestamp("2026-11-12T01:00:00Z"))
     old, new = "2026-11-12T00:59:59Z", now.isoformat()
     for clocks in ((old, new, new), (old, old, new), (old, old, old)):
         doc = documents()[FILES[0]]
@@ -519,6 +523,22 @@ def test_symlink_resolved_once_cannot_mix_units_when_swapped(tmp_path, monkeypat
     assert seen == [first / name for name in FILES]
     assert result.generation["sha256"] == "b" * 64
     assert link.resolve() == tmp_path / "second"
+
+
+def test_kept_unchecked_focus_candidates_and_no_parent_subset_check(tmp_path) -> None:
+    docs = documents(focus=[member(3)])
+    docs[FILES[1]]["candidates"] = "zz-ignored"
+    result = read(tmp_path, docs)
+    assert result.memberships["NS focus"] == {"ZZX:ZZAAD"}
+    docs[FILES[0]]["candidates"] = [member(4)]
+    assert read(tmp_path, docs).memberships == result.memberships
+
+
+def test_kept_bad_generation_timestamp_uses_timestamp_refusal(tmp_path) -> None:
+    docs = documents()
+    for doc in docs.values():
+        doc["generation"]["as_of"] = "zz-invalid"
+    refusal(tmp_path, docs, AWARE)
 
 
 def test_source_only_pinned_dependencies_no_writes_or_network() -> None:
