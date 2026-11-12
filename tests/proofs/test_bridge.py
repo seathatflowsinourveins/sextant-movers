@@ -859,3 +859,225 @@ def test_every_shared_refused_prefix(doc, prefix):
     changed = copy.deepcopy(doc)
     changed["watchlists"]["NS Ranked"][0] = prefix + ":ZZB000"
     refuse(lambda: project(changed), "j5 ranked mappings inexact or aliased" + SUFFIX)
+
+
+# Cut 3: seeded answers and isolated reference parity; no earlier section changes.
+def seeded_documents(root):
+    import random
+
+    rng = random.Random(6022)  # noqa: S311 - reproducible synthetic documents
+    cases = []
+    faults = list(FAULTS)
+    for index in range(320):
+        doc = real_doc(
+            root / str(index),
+            rng.choice((2, 3, 7, 17)),
+            rng.choice(("PRE", "RTH")),
+            rng.choice((0, 1, 100, 123456789)),
+        )
+        fault = faults[index] if index < len(faults) else rng.choice(["accepted"] * 10 + faults)
+        if fault == "accepted":
+            gen = generation(doc)
+            # Keep different focus subsets, unranked counts and shortened rank projections.
+            rows = tuple(replace(r, focus_eligible=rng.choice((True, False))) for r in gen.rows)
+            if index % 3 == 0:
+                rows = (*rows[:-1], replace(rows[-1], score=None, rank=None))
+            doc = rebuild(doc, rows=rows)
+            n = sum(r.rank is not None for r in rows)
+            doc["watchlists"]["NS Ranked"] = doc["watchlists"]["NS Ranked"][: rng.randint(1, n)]
+        else:
+            doc = damage(doc, fault)
+        cases.append(
+            {"fault": fault, "document": doc, "bounds": [["0.05", "2", 1], ["0.07", "3", 60]]}
+        )
+    assert set(faults) <= {case["fault"] for case in cases}
+    return {"method_version": METHOD, "paper_slot": SLOT, "cases": cases}
+
+
+def extra_cases():
+    return (
+        [
+            {"operation": "rfc", "value": value}
+            for value in (0, -1, True, 1.0, NS + 1, 253402300800 * NS)
+        ]
+        + [
+            {"operation": "bounds", "value": [gap, ratio, age]}
+            for gap, ratio, age in (
+                ("0", "2", 1),
+                ("-1", "2", 1),
+                ("NaN", "2", 1),
+                ("Infinity", "2", 1),
+                ("-Infinity", "2", 1),
+                (0.1, "2", 1),
+                (True, "2", 1),
+                ("1", "0", 1),
+                ("1", "NaN", 1),
+                ("1", "2", 0),
+                ("1", "2", -1),
+                ("1", "2", True),
+                ("1", "2", 1.0),
+                ("1", "2", 1),
+            )
+        ]
+        + [{"operation": "project", "value": []}]
+    )
+
+
+def bridge_answers(module, payload, identity):
+    """The same text-input answer collector runs in this process and in the child."""
+    answers = []
+    for case in payload["cases"]:
+        for spec in case["bounds"]:
+            bounds = module.DisplayBounds(D(spec[0]), D(spec[1]), spec[2])
+            try:
+                unit = module.project_display_unit(case["document"], bounds=bounds, **identity)
+                answer = [
+                    "accepted",
+                    json.dumps(unit.documents(), sort_keys=True, separators=(",", ":")),
+                ]
+            except module.BridgeError as error:
+                answer = ["refused", str(error)]
+            answers.append(answer)
+    extras = []
+    for case in payload["extras"]:
+        try:
+            op, value = case["operation"], case["value"]
+            if op == "rfc":
+                result = module._rfc(value)
+            elif op == "bounds":
+                gap, ratio, age = value
+                module.DisplayBounds(
+                    D(gap) if isinstance(gap, str) else gap,
+                    D(ratio) if isinstance(ratio, str) else ratio,
+                    age,
+                )
+                result = "bounds accepted"
+            else:
+                module.project_display_unit(
+                    value, bounds=module.DisplayBounds(D(1), D(1), 1), **identity
+                )
+                result = "project accepted"
+            extras.append(["accepted", result])
+        except module.BridgeError as error:
+            extras.append(["refused", str(error)])
+    return {"documents": answers, "extras": extras}
+
+
+def seeded_payload(root):
+    return seeded_documents(root) | {"extras": extra_cases()}
+
+
+def answer_digest(answers):
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(answers, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+BRIDGE_DIGEST = "b4144efff9e058d9ac523ec3505bc0db262305dad8ccc9a7a7d4e99c0f515f90"
+
+
+def test_seeded_answers_are_pinned(tmp_path):
+    payload = seeded_payload(tmp_path / "leases")
+    answers = bridge_answers(b, payload, {"method_version": METHOD, "paper_slot": SLOT})
+    assert len(payload["cases"]) == 320 and len(answers["documents"]) == 640
+    assert {a[0] for a in answers["documents"]} == {"accepted", "refused"}
+    assert len(answers["extras"]) == 21
+    assert sum(a[0] == "accepted" for a in answers["documents"]) == 124
+    assert answer_digest(answers) == BRIDGE_DIGEST
+
+
+def test_every_accepted_seeded_projection_roundtrips(tmp_path):
+    from pandas import Timestamp
+
+    payload = seeded_payload(tmp_path / "leases")
+    accepted = 0
+    for case in payload["cases"]:
+        for gap, ratio, age in case["bounds"]:
+            try:
+                unit = project(case["document"], bounds=b.DisplayBounds(D(gap), D(ratio), age))
+            except b.BridgeError:
+                continue
+            display = unit.display_lists
+            now = Timestamp(display["generated_at"])
+            result = write_read(tmp_path, unit, now)
+            assert result.generation == display["generation"]
+            assert result.memberships == {
+                "NS movers": frozenset(m["tradingview_symbol"] for m in display["ns_movers"]),
+                "NS focus": frozenset(m["tradingview_symbol"] for m in display["ns_focus"]),
+            }
+            assert [m["tradingview_symbol"] for m in display["ns_movers"]] == (
+                case["document"]["watchlists"]["NS Ranked"]
+            )
+            for name, key in (("top100.json", "ns_movers"), ("focus.json", "ns_focus")):
+                assert unit.documents()[name]["candidates"] == display[key]
+            late = Timestamp(display["as_of_snapshot"]) + timedelta(
+                seconds=display["bounds"]["max_age_s"] + 1
+            )
+            with pytest.raises(
+                inputs.InputError, match="Research generation expired; lists NOT synced"
+            ):
+                write_read(tmp_path, unit, late)
+            accepted += 1
+    assert accepted == 124
+
+
+BRIDGE_PARITY = r"""
+import hashlib, json, os, sys
+src = os.environ["MOVERS_REFERENCE_SRC"]
+blobs = {
+    "bridge.py": "29f8c37cd021082ae43f1d5c70c834456b6c0a8c",
+    "inputs.py": "83bb85dfb9e2833430b6d95b010dced8f6e47a49",
+    "producer.py": "02d58845621c786a1ee706e45f6cf7842cffd43a",
+}
+for name, expected in blobs.items():
+    path = os.path.join(src, "sextant", "tradingview", name)
+    with open(path, "rb") as handle:
+        blob = handle.read()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected
+sys.path.insert(0, src)
+import nautilus_trader
+from sextant.tradingview import bridge as reference
+assert os.path.samefile(
+    reference.__file__, os.path.join(src, "sextant", "tradingview", "bridge.py")
+)
+payload = json.loads(sys.stdin.read())
+reference.METHOD = payload["method_version"]
+reference.DISPLAY_PAPER_SLOT = payload["paper_slot"]
+print("PARITY " + json.dumps({
+    "versions": [list(sys.version_info[:3]), nautilus_trader.__version__],
+    "answers": bridge_answers(reference, payload, {}),
+}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_parity_with_reference_in_child(tmp_path):
+    import sys
+
+    import nautilus_trader
+    import reference_child as child
+
+    src, python = child.reference()
+    payload = seeded_payload(tmp_path / "leases")
+    script = "import json\nfrom decimal import Decimal as D\n"
+    script += inspect.getsource(bridge_answers) + BRIDGE_PARITY
+    theirs = child.run(python, src, script, stdin=json.dumps(payload))
+    here = [list(sys.version_info[:3]), nautilus_trader.__version__]
+    assert here == theirs["versions"], f"STOP: version mismatch {here} != {theirs['versions']}"
+    ours = bridge_answers(b, payload, {"method_version": METHOD, "paper_slot": SLOT})
+    assert len(ours["documents"]) == len(theirs["answers"]["documents"]) == 640
+    for kind in ("documents", "extras"):
+        for index, (actual, expected) in enumerate(
+            zip(ours[kind], theirs["answers"][kind], strict=True)
+        ):
+            assert actual == expected, f"{kind} answer differs at {index}"
+    assert answer_digest(ours) == BRIDGE_DIGEST
+    accepted = sum(answer[0] == "accepted" for answer in ours["documents"])
+    print(f"\nPython/engine: here {here}, reference {theirs['versions']}")
+    print(
+        f"bridge parity: {len(payload['cases'])} documents, {len(ours['documents'])} answers, "
+        f"{accepted} accepted, {len(ours['documents']) - accepted} refused; "
+        f"{len(ours['extras'])} helper/bounds answers equal; digest {BRIDGE_DIGEST}"
+    )
