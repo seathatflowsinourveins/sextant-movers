@@ -287,12 +287,80 @@ def test_page_parser_has_no_active_element_or_external_reference() -> None:
     assert "FRESH" not in page
 
 
-@pytest.mark.parametrize(("top_n", "shown"), [(0, ()), (-1, ("ZZVAA",)), (-2, ())])
-def test_observed_nonpositive_top_n_uses_python_slice(top_n: int, shown: tuple[str, ...]) -> None:
+@pytest.mark.parametrize(
+    ("expected", "observed", "shown"),
+    [(None, 3, "3 of n/a"), (3, None, "n/a of 3"), (None, None, "n/a of n/a")],
+)
+def test_unknown_coverage_counts_show_na_without_changing_document(
+    expected: int | None, observed: int | None, shown: str
+) -> None:
+    gen = generation()
+    gen = replace(
+        gen, coverage=replace(gen.coverage, expected_symbols=expected, observed_symbols=observed)
+    )
+    doc = document()
+    doc["generation"] = view.generation_view(
+        gen, segment="RTH", top_n=1, universe_source="zz-universe"
+    )
+    assert doc["generation"]["coverage"]["expected_symbols"] is expected
+    assert doc["generation"]["coverage"]["observed_symbols"] is observed
+    page = view.render_html(doc, now_ns=NOW)
+    assert f"<dt>Coverage</dt><dd>READY, complete True, {shown} observed</dd>" in page
+    assert "None" not in page
+
+
+TOP_N_REFUSALS = [
+    (0, ValueError, "top_n: non-positive value"),
+    (-1, ValueError, "top_n: non-positive value"),
+    (True, TypeError, "top_n must be int, never float or bool"),
+    (1.0, TypeError, "top_n must be int, never float or bool"),
+    ("1", TypeError, "top_n must be int, never float or bool"),
+    (None, TypeError, "top_n must be int, never float or bool"),
+]
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+def test_generation_view_refuses_invalid_top_n(
+    top_n: Any, error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error) as refusal:
+        view.generation_view(generation(), segment="RTH", top_n=top_n, universe_source="zz-source")
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+def test_render_html_refuses_invalid_top_n(
+    top_n: Any, error: type[Exception], message: str
+) -> None:
     doc = document()
     doc["generation"]["top_n"] = top_n
-    page = view.render_html(doc, now_ns=NOW)
-    assert tuple(name for name in ("ZZVAA", "ZZVAB") if name in page) == shown
+    with pytest.raises(error) as refusal:
+        view.render_html(doc, now_ns=NOW)
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+@pytest.mark.parametrize("existing_page", [False, True])
+def test_write_view_refuses_invalid_top_n_after_json_before_html(
+    tmp_path: Path, top_n: Any, error: type[Exception], message: str, existing_page: bool
+) -> None:
+    doc = document()
+    page = tmp_path / "ranked.html"
+    if existing_page:
+        view.write_view(tmp_path, doc, now_ns=NOW)
+    old_page = page.read_bytes() if existing_page else None
+    doc["generation"]["top_n"] = top_n
+    with pytest.raises(error) as refusal:
+        view.write_view(tmp_path, doc, now_ns=NOW)
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+    assert json.loads((tmp_path / "ranked.json").read_text()) == doc
+    assert (page.read_bytes() if page.exists() else None) == old_page
+    assert {p.name for p in tmp_path.iterdir()} == (
+        {"ranked.json", "ranked.html"} if existing_page else {"ranked.json"}
+    )
 
 
 def test_observed_missing_generation_key_raises_and_future_clock_clamps_age() -> None:
