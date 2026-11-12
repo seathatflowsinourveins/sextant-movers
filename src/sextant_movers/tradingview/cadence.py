@@ -2,6 +2,8 @@
 
 Build on python/cpython@v3.13.18 0d4bd512fc429e3d4eacdd113c975e161f21644d:
 Lib/json/__init__.py:185,304; Lib/hashlib.py:14; Doc/library/types.rst:357;
+Lib/pathlib/_local.py:539; Doc/library/pathlib.rst:1179; Doc/library/io.rst:120;
+Doc/library/json.rst:639. Departure: read UTF-8 rather than the reference's locale encoding.
 Doc/library/datetime.rst:1352. Package data uses Lib/importlib/resources/_common.py:52,166.
 Build on gerrymanoim/exchange_calendars@4.13.2
 dbe38b1f6887434bbdd1a7d2df6ff8f1742a048a:exchange_calendars/exchange_calendar.py:1263,
@@ -49,7 +51,7 @@ class CadencePolicy:
     """A sourced registry and its floor; every shipped value remains UNCALIBRATED."""
 
     def __init__(self, registry: Path) -> None:
-        raw = json.loads(registry.read_text())
+        raw = json.loads(registry.read_text(encoding="utf-8"))
         rows = raw["rows"]
         if raw["schema"] != "j5-cadence.registry/1" or len(rows) != len(ROWS):
             raise ValueError("missing or duplicate cadence registry row")
