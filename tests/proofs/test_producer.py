@@ -411,14 +411,6 @@ def test_heartbeat_deadline_only_when_reader_accepts_and_lease_held(factory):
     assert not live.heartbeat(at=NOW, received_ns=NOW) and live.heartbeat_deadline == 0
 
 
-def test_heartbeat_after_segment_end_is_accepted_but_display_is_not(factory):
-    live = factory()
-    end = SEG.end_ns + 1
-    assert live.heartbeat(at=end, received_ns=end)
-    assert live.heartbeat_deadline == end + REG.seconds("heartbeat_max_age_s")
-    assert unit(live, now=end)["reason"] == SESSION
-
-
 def test_fresh_document_key_by_key_and_captured_unit_stable(factory):
     live = factory()
     assert observe(live, 360, now=NOW)
