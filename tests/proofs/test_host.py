@@ -562,3 +562,382 @@ def test_source_boundaries_and_departures():
     assert module.Bar is Bar and module.BarPoll is BarPoll
     assert module.WriterLease is WriterLease and module.AccountScope is AccountScope
     assert module.REFUSED_PREFIXES is REFUSED_PREFIXES
+
+
+# Cut B: seeded sessions. Only the isolated reference child imports the reference.
+def host_inputs():
+    import random
+
+    from test_producer import producer_inputs
+
+    template = producer_inputs()
+    rng = random.Random(20261121)  # noqa: S311 - reproducible synthetic polls
+    runs = []
+    kinds = (
+        "failed",
+        "unrequested",
+        "repeat",
+        "older",
+        "zero",
+        "missing",
+        "late",
+        "early_receive",
+        "before_start",
+        "future_close",
+    )
+    for index in range(60):
+        segment = ("PRE", "RTH", "POST")[index % 3]
+        start = START + (index % 3) * 6 * 3600 * NS
+        events = dict(
+            zip(rng.sample(range(8, 30), len(kinds)), rng.sample(kinds, len(kinds)), strict=True)
+        )
+        revision_minute = rng.randint(31, 33)
+        steps = []
+        last = {}
+        backfill = []
+
+        def row(minute, name, start=start):
+            return {
+                "symbol": name,
+                "start_ns": start + minute * MINUTE_NS,
+                "open": "1.90",
+                "close": str(D(2) + D(minute) / 100 + D(NAMES.index(name)) / 1000),
+                "volume": rng.randint(1, 30),
+                "trades": rng.randint(0, 7),
+            }
+
+        for minute in range(36):
+            at = start + (minute + 1) * MINUTE_NS
+            bars = [row(minute, name) for name in NAMES]
+            requested, failed = list(NAMES), []
+            received = at + rng.choice((0, 0, 0, 1))
+            name = rng.choice(NAMES)
+            kind = "revised" if minute == revision_minute else events.get(minute, "complete")
+            carried, backfill = backfill, []
+            missing = None
+            if kind in {"failed", "unrequested"}:
+                backfill = [b for b in bars if b["symbol"] == name]
+                bars = [b for b in bars if b["symbol"] != name]
+                if kind == "failed":
+                    failed = [name]
+                else:
+                    requested.remove(name)
+            elif kind == "repeat":
+                bars.append(dict(last[name]))
+            elif kind == "older":
+                bars.append(row(0, name))
+            elif kind == "zero":
+                next(b for b in bars if b["symbol"] == name)["volume"] = 0
+            elif kind == "missing":
+                missing = name
+            elif kind == "late":
+                received = at + rng.choice((1, NS, 3 * NS))
+            elif kind == "early_receive":
+                received = at - 1
+            elif kind == "before_start":
+                bars.append(row(-1, name))
+            elif kind == "future_close":
+                bars.append(row(minute + 1, name))
+            elif kind == "revised":
+                bars.append(dict(last[name]) | {"close": "4.10"})
+            for b in bars:
+                if b["start_ns"] == start + minute * MINUTE_NS:
+                    last[b["symbol"]] = dict(b)
+            steps.append(
+                {
+                    "bars": carried + bars,
+                    "requested": requested,
+                    "failed": failed,
+                    "market": at,
+                    "received": received,
+                    "missing": missing,
+                    "kind": kind,
+                }
+            )
+            if missing is not None:
+                # Restore the reference and retry exactly the remembered bar at the same minute.
+                steps.append(
+                    {
+                        "bars": [dict(last[missing])],
+                        "requested": list(NAMES),
+                        "failed": [],
+                        "market": at,
+                        "received": at + 1,
+                        "missing": None,
+                        "kind": "reference_retry",
+                    }
+                )
+        runs.append(
+            {
+                "segment": [
+                    segment,
+                    template["segment"][1],
+                    start,
+                    start + 36 * MINUTE_NS,
+                    "zz-segment",
+                ],
+                "epoch": f"zz-host-{index}",
+                "steps": steps,
+            }
+        )
+    return {
+        key: template[key]
+        for key in (
+            "registry",
+            "method_version",
+            "universe",
+            "universe_source",
+            "scope",
+            "paper_slot",
+            "authority",
+        )
+    } | {"runs": runs}
+
+
+def host_replay(m, inputs, root):
+    """Drive both native hosts with identical polls; every step carries all four answers."""
+    import json
+    from dataclasses import asdict
+    from datetime import date
+    from decimal import Decimal
+    from pathlib import Path
+
+    rows = tuple(
+        m["RegistryRow"](
+            n, u, Decimal(v) if decimal else int(v), source, state, date.fromisoformat(day)
+        )
+        for n, u, v, source, state, day, decimal in inputs["registry"]
+    )
+    answers = []
+    for index, run in enumerate(inputs["runs"]):
+        name, day, start, end, source = run["segment"]
+        segment = m["Segment"](name, date.fromisoformat(day), start, end, source)
+        samples = tuple(
+            m["BaselineSample"](
+                symbol, name, "2030-11-27", offset, Decimal(dollars), Decimal(count)
+            )
+            for symbol in inputs["universe"]
+            for offset, dollars, count in ((0, "0", "0"), (3600, "3000", "600"))
+        )
+        baseline = m["BaselineTable"](samples, "zz-curves", start - 1, "sip")
+        pub = m["publisher"](
+            epoch=run["epoch"],
+            feed="sip",
+            segment=segment,
+            registry=m["Registry"](rows),
+            universe=tuple(inputs["universe"]),
+            universe_source=inputs["universe_source"],
+            baseline=baseline,
+        )
+        for symbol in inputs["universe"]:
+            pub.set_symbol(
+                symbol,
+                references=m["ReferencePrices"](Decimal(2), start - 1, "zz-close"),
+                asset=m["AssetState"](start - 1, end, False, "common", "zz-asset"),
+            )
+        scope = m["scope"](*inputs["scope"])
+        lease = m["WriterLease"](scope, Path(root) / str(index), "zz-host")
+        lease.acquire()
+        observed = []
+        try:
+            host = m["host"](
+                pub,
+                lease=lease,
+                scope=scope,
+                paper_slot=inputs["paper_slot"],
+                sip_authority=inputs["authority"],
+                symbol_map={s: "ZZX:" + s for s in inputs["universe"]},
+            )
+            for step in run["steps"]:
+                bars = tuple(
+                    m["Bar"](
+                        symbol=b["symbol"],
+                        start_ns=b["start_ns"],
+                        open=Decimal(b["open"]),
+                        close=Decimal(b["close"]),
+                        volume=b["volume"],
+                        trades=b["trades"],
+                    )
+                    for b in step["bars"]
+                )
+                poll = m["BarPoll"](bars, tuple(step["requested"]), tuple(step["failed"]))
+                removed = pub.references.pop(step["missing"]) if step["missing"] else None
+                try:
+                    intake = host.ingest(
+                        poll, market_ns=step["market"], received_ns=step["received"]
+                    )
+                except Exception as exc:
+                    intake = [type(exc).__name__, str(exc)]
+                if removed is not None:
+                    pub.references[step["missing"]] = removed
+                coverage = asdict(pub.coverage)
+                coverage["state"] = pub.coverage.state.value
+                coverage = json.loads(json.dumps(coverage))
+                try:
+                    beat = host.heartbeat(at=step["market"], received_ns=step["received"])
+                except Exception as exc:
+                    beat = [type(exc).__name__, str(exc)]
+                try:
+                    doc = host.publish(
+                        Path(root) / "unit", now=max(step["market"], step["received"])
+                    )
+                    document = json.dumps(doc, sort_keys=True, separators=(",", ":"))
+                except Exception as exc:
+                    document = [type(exc).__name__, str(exc)]
+                observed.append([intake, coverage, beat, document])
+        finally:
+            lease.close()
+        answers.append(observed)
+    return answers
+
+
+def host_answers(inputs, tmp_path):
+    from test_publisher import EDGES, TYPES
+
+    from sextant_movers.ranking.baseline import BaselineSample, BaselineTable, Segment
+    from sextant_movers.ranking.engine import ReferencePrices
+    from sextant_movers.ranking.publisher import AssetState, RankingPublisher
+    from sextant_movers.ranking.registry import Registry, RegistryRow
+
+    m = {
+        "Registry": Registry,
+        "RegistryRow": RegistryRow,
+        "Segment": Segment,
+        "BaselineSample": BaselineSample,
+        "BaselineTable": BaselineTable,
+        "ReferencePrices": ReferencePrices,
+        "AssetState": AssetState,
+        "scope": AccountScope,
+        "WriterLease": WriterLease,
+        "host": BarFidelityHost,
+        "Bar": Bar,
+        "BarPoll": BarPoll,
+    }
+    m["publisher"] = lambda **kw: RankingPublisher(
+        send=lambda *args: None,
+        method_version=inputs["method_version"],
+        eligible_security_types=TYPES,
+        price_band_edges=EDGES,
+        **kw,
+    )
+    return host_replay(m, inputs, tmp_path)
+
+
+def host_counts(answers):
+    steps = [step for run in answers for step in run]
+    documents = [json.loads(s[3]) for s in steps if isinstance(s[3], str)]
+    return {
+        "sessions": len(answers),
+        "polls": len(steps),
+        "fresh": sum(d["status"] == "fresh" for d in documents),
+        "unavailable": sum(d["status"] == "unavailable" for d in documents),
+        "exceptions": sum(isinstance(s[i], list) for s in steps for i in (0, 2, 3)),
+    }
+
+
+HOST_DIGEST = "2e3fb4d1eb2df4caa931f4533c4ac41df0dee4439eb2145842202602cc61905e"
+
+
+def test_seeded_host_answers_are_pinned(tmp_path):
+    import hashlib
+
+    inputs = host_inputs()
+    assert {r["segment"][0] for r in inputs["runs"]} == {"PRE", "RTH", "POST"}
+    assert all(len({s["market"] for s in r["steps"]}) >= 30 for r in inputs["runs"])
+    assert {s["kind"] for r in inputs["runs"] for s in r["steps"]} == {
+        "complete",
+        "failed",
+        "unrequested",
+        "repeat",
+        "older",
+        "zero",
+        "missing",
+        "late",
+        "early_receive",
+        "before_start",
+        "future_close",
+        "revised",
+        "reference_retry",
+    }
+    # Every run has its own exact-end bar, alongside all three supported segment names.
+    assert all(r["steps"][-1]["market"] == r["segment"][3] for r in inputs["runs"])
+    answers = host_answers(inputs, tmp_path)
+    counts = host_counts(answers)
+    assert counts["sessions"] >= 60 and counts["polls"] >= 1800
+    assert counts["fresh"] > 0 and counts["unavailable"] > 0 and counts["exceptions"] > 0
+    digest = hashlib.sha256(json.dumps(answers, sort_keys=True, separators=(",", ":")).encode())
+    print(f"host answers: {counts}, digest {digest.hexdigest()}")
+    assert digest.hexdigest() == HOST_DIGEST
+
+
+HOST_PARITY = r"""
+import hashlib, json, os, sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+src = os.environ["MOVERS_REFERENCE_SRC"]
+blobs = {
+    "tradingview/host.py": "334748530508928f7d9bdcd173dce4144f2b7450",
+    "tradingview/producer.py": "02d58845621c786a1ee706e45f6cf7842cffd43a",
+    "tradingview/bars.py": "8ae03acec28cabae0425cf6af1bce38b08910e60",
+    "ranking/window.py": "4180e5aa8466eb4c548488218d3826fac10fa0ef",
+    "ranking/publisher.py": "498ac186d643a137b32f6ff84f9ca76c657fb0ee",
+    "ranking/engine.py": "15e1907ac6c3e24218e6ae945001ea3ab0c1492f",
+}
+for path, expected in blobs.items():
+    blob = (Path(src) / "sextant" / path).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected, path
+sys.path.insert(0, src)
+import nautilus_trader
+from sextant.tradingview import host as h, producer as pr, bars as b
+from sextant.ranking import baseline as bl, engine as en, publisher as pb, registry as rg
+from sextant.ranking import reader as rd
+from sextant.execution import custody as cu
+assert os.path.samefile(h.__file__, Path(src) / "sextant/tradingview/host.py")
+inputs = json.loads(sys.stdin.read())
+versions = [list(sys.version_info[:3]), nautilus_trader.__version__]
+assert versions == inputs.pop("versions"), "Python/engine version mismatch"
+pb.METHOD = rd.METHOD = inputs["method_version"]
+assert [pr.SCOPE.broker, pr.SCOPE.account] == inputs["scope"]
+assert pr.DISPLAY_PAPER_SLOT == inputs["paper_slot"]
+class Bus:
+    def publish(self, *args, **kw):
+        pass
+
+def host(pub, *, lease, scope, paper_slot, sip_authority, symbol_map):
+    assert scope == pr.SCOPE and paper_slot == pr.DISPLAY_PAPER_SLOT
+    return h.BarFidelityHost(pub, lease=lease, sip_authority=sip_authority, symbol_map=symbol_map)
+
+m = {"Registry": rg.Registry, "RegistryRow": rg.RegistryRow, "Segment": en.Segment,
+     "BaselineSample": bl.BaselineSample, "BaselineTable": bl.BaselineTable,
+     "ReferencePrices": en.ReferencePrices, "AssetState": pb.AssetState,
+     "scope": cu.AccountScope, "WriterLease": cu.WriterLease, "host": host,
+     "Bar": b.Bar, "BarPoll": b.BarPoll,
+     "publisher": lambda **kw: pb.RankingPublisher(bus=Bus(), **kw)}
+with TemporaryDirectory() as temporary:
+    answers = host_replay(m, inputs, Path(temporary))
+print("PARITY " + json.dumps({"versions": versions, "answers": answers}))
+"""
+
+
+@pytest.mark.local
+def test_host_parity_with_reference_child(tmp_path):
+    import inspect
+    import sys
+
+    import nautilus_trader
+    import reference_child as child
+
+    src, python = child.reference()
+    versions = [list(sys.version_info[:3]), nautilus_trader.__version__]
+    inputs = host_inputs()
+    script = inspect.getsource(host_replay) + HOST_PARITY
+    theirs = child.run(python, src, script, stdin=json.dumps(inputs | {"versions": versions}))
+    assert versions == theirs["versions"], f"version mismatch: {versions}, {theirs['versions']}"
+    ours = host_answers(inputs, tmp_path)
+    print(f"\npython, engine: here {versions}, reference {theirs['versions']}")
+    print(f"host parity: {host_counts(ours)}")
+    assert len(ours) == len(theirs["answers"])
+    for index, (a, b) in enumerate(zip(ours, theirs["answers"], strict=True)):
+        assert len(a) == len(b)
+        for step, (left, right) in enumerate(zip(a, b, strict=True)):
+            assert left == right, f"session {index}, poll {step}: four-answer mismatch"
