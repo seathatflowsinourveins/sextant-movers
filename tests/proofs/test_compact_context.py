@@ -246,6 +246,19 @@ def test_subagent_compaction_emits_no_session_role_context(
         assert out.stderr == ""
 
 
+@pytest.mark.parametrize("empty", [None, "", 0, []])
+def test_an_agent_id_that_names_no_one_keeps_the_sessions_reminder(
+    tmp_path: Path, empty: object
+) -> None:
+    # Only a non-empty string is an identity; an input that always carries the
+    # field, as null or empty, is still an ordinary session.
+    payload = {"hook_event_name": "SessionStart", "source": "compact", "agent_type": "lead"}
+    stdin = json.dumps(payload | {"agent_id": empty})
+    out = _run("session-start", state=_state(tmp_path), tmp_path=tmp_path, stdin=stdin)
+    assert out.returncode == 0, out.stderr
+    assert "Role: lead" in out.stdout and _pointer("lead") in out.stdout
+
+
 def test_unknown_role_lists_every_known_role(tmp_path: Path) -> None:
     state = _state(tmp_path)
     out = _run("session-start", state=state, tmp_path=tmp_path, stdin="{}")

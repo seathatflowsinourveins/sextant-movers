@@ -6,7 +6,8 @@ compaction"; code.claude.com/docs/en/hooks.md, SessionStart and PreCompact;
 code.claude.com/docs/en/best-practices.md, "Keep cost and context down";
 code.claude.com/docs/en/settings-reference.md, `idleCompaction`. All read
 2026-11-09. Hooks "Common input fields", read 2026-11-11: `agent_id` marks a
-subagent or in-process teammate; both hook modes stay silent when it is present.
+subagent or in-process teammate; both hook modes stay silent when it holds a
+non-empty string.
 Carried from Sextant's scripts/compact_context.py (see ORIGINS.md).
 
 The state folder is private, so this public repository never names it: the
@@ -216,7 +217,9 @@ def main(argv: list[str], stdin_text: str, state: Path | None) -> int:
     if not isinstance(payload, dict):
         payload = {}
     # A subagent must never inherit a session role's pointer, even via --role.
-    if "agent_id" in payload:
+    # Only a non-empty string is an identity: null or empty is still a session.
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id:
         return 0
     role = _role_from(argv[1:], payload)
     try:
