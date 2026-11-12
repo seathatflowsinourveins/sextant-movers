@@ -646,7 +646,7 @@ def actual_segment(day: date, hour: int, minute: int = 0) -> Segment:
 
 def early_and_next() -> tuple[date, date]:
     cal = calendar_choice()
-    early = next(d.date() for d in reversed(cal.early_closes) if d.year == 2026)
+    early = next(d.date() for d in reversed(cal.early_closes) if d.year == 2026 and d.month == 11)
     following = cal.sessions[cal.sessions.get_loc(str(early)) + 1].date()
     return early, following
 
@@ -717,9 +717,9 @@ def test_session_choice_on_early_day_short_rth_and_1300_post() -> None:
 
 
 def test_session_choice_weeks_after_both_dst_changes() -> None:
-    from sextant_movers.ranking.references import prior_sessions
-
     from itertools import pairwise
+
+    from sextant_movers.ranking.references import prior_sessions
 
     sessions = [s.date() for s in calendar_choice().sessions if s.year == 2026]
     changes = [
