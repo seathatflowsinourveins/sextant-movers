@@ -111,3 +111,46 @@ def test_a_failure_after_the_replace_raises_with_the_new_content_whole(
     assert json.loads(path.read_text()) == VALUE
     assert [entry.name for entry in tmp_path.iterdir()] == ["doc.json"]
     assert "after the rename" in (atomic.__doc__ or "")
+
+
+def test_text_is_exact_utf8_without_newline_translation(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "page.html"
+    text = "zz-é\r\nline\nlast\r"
+    atomic.write_atomic_text(path, text)
+    assert path.read_bytes() == text.encode("utf-8")
+    assert [p.name for p in path.parent.iterdir()] == ["page.html"]
+
+
+def test_text_failure_before_replace_keeps_old_file_and_no_temporary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "page.html"
+    path.write_bytes(b"old page")
+
+    def crash(src: str, dst: Path) -> None:
+        raise OSError("zz-before-replace")
+
+    monkeypatch.setattr(os, "replace", crash)
+    with pytest.raises(OSError, match="zz-before-replace"):
+        atomic.write_atomic_text(path, "new é")
+    assert path.read_bytes() == b"old page"
+    assert [p.name for p in tmp_path.iterdir()] == ["page.html"]
+
+
+def test_text_file_is_owner_only_even_when_replacing_a_public_file(tmp_path: Path) -> None:
+    path = tmp_path / "page.html"
+    path.write_text("old")
+    path.chmod(0o644)
+    atomic.write_atomic_text(path, "new")
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_text_sync_order_uses_the_existing_json_witness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "write_atomic", lambda path, value: atomic.write_atomic_text(path, "é")
+    )
+    test_the_file_then_the_directory_are_synced_around_the_replace(tmp_path, monkeypatch)
