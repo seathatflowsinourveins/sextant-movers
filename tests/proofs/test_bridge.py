@@ -12,7 +12,6 @@ from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 from decimal import Decimal as D
 from pathlib import Path
-from typing import Any
 
 import pytest
 from nautilus_trader.model import TradeTick
@@ -323,13 +322,6 @@ def test_each_document_refusal_alone(doc, case):
     refuse(lambda: project(damage(doc, case)), message)
 
 
-@pytest.mark.parametrize("field", ["gap_bound", "rvol_bound"])
-@pytest.mark.parametrize("value", [D(0), D(-1), D("NaN"), D("Infinity"), D("-Infinity"), 0.1, True])
-def test_decimal_bounds_each_edge(field, value):
-    kw: dict[str, Any] = dict(gap_bound=D("0.05"), rvol_bound=D(2), max_age_s=1) | {field: value}
-    refuse(lambda: b.DisplayBounds(**kw), "Sourced positive Decimal display bounds required")
-
-
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), 1.0, True])
 def test_age_bound_each_edge(value):
     refuse(
@@ -413,6 +405,133 @@ def test_last_except_each_class(doc, monkeypatch, kind):
     refuse(lambda: project(doc), INVALID)
 
 
+def test_source_shared_constants_types_and_pure_boundary():
+    tree = ast.parse(Path(b.__file__).read_text())
+    allowed = {
+        "__future__",
+        "json",
+        "re",
+        "collections.abc",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "typing",
+        "sextant_movers.sessions",
+        "sextant_movers.ranking.generation",
+        "sextant_movers.ranking.publisher",
+        "sextant_movers.tradingview.inputs",
+        "sextant_movers.tradingview.producer",
+    }
+    imports = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    imports |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert imports <= allowed
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and ast.get_docstring(n):
+            n.body = n.body[1:]
+    values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)]
+    assert not {"sip", 600, 100, *inputs.REFUSED_PREFIXES} & set(values)
+    forbidden = {
+        "open",
+        "write",
+        "write_text",
+        "write_bytes",
+        "read",
+        "read_text",
+        "now",
+        "time",
+        "sleep",
+        "Thread",
+        "Timer",
+        "socket",
+        "__import__",
+        "exec",
+        "eval",
+    }
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            assert (
+                n.func.id
+                if isinstance(n.func, ast.Name)
+                else n.func.attr
+                if isinstance(n.func, ast.Attribute)
+                else ""
+            ) not in forbidden
+
+
+def test_kept_expired_branch_requires_changing_mapping(doc):
+    gen = generation(doc)
+    assert gen.ts_event <= gen.known_at < doc["expires_at_ns"]
+
+    class ChangingExpiry(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            if key == "expires_at_ns":
+                self.reads += 1
+                if self.reads == 3:
+                    return gen.ts_event
+            return super().__getitem__(key)
+
+    refuse(lambda: project(ChangingExpiry(doc)), "j5 generation expired" + SUFFIX)
+
+
+def test_feed_comes_from_producer():
+    assert b.SIP_FEED == producer.SIP_FEED
+    tree = ast.parse(Path(b.__file__).read_text())
+    assert any(
+        isinstance(n, ast.ImportFrom)
+        and n.module == "sextant_movers.tradingview.producer"
+        and any(a.name == "SIP_FEED" for a in n.names)
+        for n in tree.body
+    )
+
+
+def test_bounds_come_from_reader_and_session_second():
+    assert b.MAX_MEMBERS == inputs.MAX_MEMBERS
+    assert b.REFUSED_PREFIXES is inputs.REFUSED_PREFIXES
+    assert b.MAX_LAG_NS == inputs.MAX_SNAPSHOT_LAG_S * SECOND
+    tree = ast.parse(Path(b.__file__).read_text())
+    lag = next(
+        n.value
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "MAX_LAG_NS" for t in n.targets)
+    )
+    assert ast.unparse(lag) == "MAX_SNAPSHOT_LAG_S * SECOND"
+
+
+def test_package_generation_and_clock_helpers():
+    from sextant_movers.ranking.publisher import RANKER
+
+    for name in ("EPOCH", "QUALIFIED", "TICKER", "InputError", "_ns", "_session", "timestamp"):
+        assert getattr(b, name) is getattr(inputs, name)
+    assert b.RankingGeneration is RankingGeneration and b.universe_digest is universe_digest
+    assert b.generation_digest is generation_digest and b.CoverageState is CoverageState
+    assert b.RANKER == RANKER
+
+
+def test_header_names_public_pins_and_package_sources():
+    header = ast.get_docstring(ast.parse(Path(b.__file__).read_text()))
+    assert header is not None and "/home/" not in header
+    assert "src/sextant/tradingview/bridge.py:58-385" in header
+    assert "06562bec0898a7203f4eaf69086ced83d2477e6b" in header
+    assert "nautechsystems/nautilus_trader@v2.0.0rc8" in header
+    assert "python/cpython@v3.13.18" in header
+    assert all(
+        name in header
+        for name in (
+            "producer.SIP_FEED",
+            "inputs.py",
+            "sessions.SECOND",
+            "ranking/generation.py",
+            "publisher.py",
+        )
+    )
+
+
+# Cut 2: remaining unit edges and observations.
+
+
 @pytest.mark.parametrize("segment", ["PRE", "RTH"])
 @pytest.mark.parametrize("fraction", [0, 123456789])
 def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
@@ -467,84 +586,13 @@ def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
         write_read(tmp_path, unit, inputs.timestamp(clocks[0]) + timedelta(seconds=61))
 
 
-def test_source_shared_constants_types_and_pure_boundary():
-    tree = ast.parse(Path(b.__file__).read_text())
-    allowed = {
-        "__future__",
-        "json",
-        "re",
-        "collections.abc",
-        "dataclasses",
-        "datetime",
-        "decimal",
-        "typing",
-        "sextant_movers.sessions",
-        "sextant_movers.ranking.generation",
-        "sextant_movers.ranking.publisher",
-        "sextant_movers.tradingview.inputs",
-        "sextant_movers.tradingview.producer",
-    }
-    imports = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    imports |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert imports <= allowed
-    assert b.MAX_MEMBERS == inputs.MAX_MEMBERS
-    assert b.REFUSED_PREFIXES is inputs.REFUSED_PREFIXES
-    assert b.MAX_LAG_NS == inputs.MAX_SNAPSHOT_LAG_S * SECOND
-    for name in ("EPOCH", "QUALIFIED", "TICKER", "InputError", "_ns", "_session", "timestamp"):
-        assert getattr(b, name) is getattr(inputs, name)
-    assert b.RankingGeneration is RankingGeneration and b.universe_digest is universe_digest
-    assert b.SIP_FEED == producer.SIP_FEED
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and ast.get_docstring(n):
-            n.body = n.body[1:]
-    values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)]
-    assert not {"sip", 600, 100, *inputs.REFUSED_PREFIXES} & set(values)
-    forbidden = {
-        "open",
-        "write",
-        "write_text",
-        "write_bytes",
-        "read",
-        "read_text",
-        "now",
-        "time",
-        "sleep",
-        "Thread",
-        "Timer",
-        "socket",
-        "__import__",
-        "exec",
-        "eval",
-    }
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Call):
-            assert (
-                n.func.id
-                if isinstance(n.func, ast.Name)
-                else n.func.attr
-                if isinstance(n.func, ast.Attribute)
-                else ""
-            ) not in forbidden
+@pytest.mark.parametrize("field", ["gap_bound", "rvol_bound"])
+@pytest.mark.parametrize("value", [D(0), D(-1), D("NaN"), D("Infinity"), D("-Infinity"), 0.1, True])
+def test_decimal_bounds_each_edge(field, value):
+    from typing import Any
 
-
-def test_kept_expired_branch_requires_changing_mapping(doc):
-    gen = generation(doc)
-    assert gen.ts_event <= gen.known_at < doc["expires_at_ns"]
-
-    class ChangingExpiry(dict):
-        reads = 0
-
-        def __getitem__(self, key):
-            if key == "expires_at_ns":
-                self.reads += 1
-                if self.reads == 3:
-                    return gen.ts_event
-            return super().__getitem__(key)
-
-    refuse(lambda: project(ChangingExpiry(doc)), "j5 generation expired" + SUFFIX)
-
-
-# Cut 2: remaining unit edges and observations.
+    kw: dict[str, Any] = dict(gap_bound=D("0.05"), rvol_bound=D(2), max_age_s=1) | {field: value}
+    refuse(lambda: b.DisplayBounds(**kw), "Sourced positive Decimal display bounds required")
 
 
 @pytest.mark.parametrize("field", ["ranker_version", "profile_version"])
@@ -915,6 +963,8 @@ def test_seeded_answers_are_pinned(tmp_path):
     answers = bridge_answers(b, payload, {"method_version": METHOD, "paper_slot": SLOT})
     assert len(payload["cases"]) == 320 and len(answers["documents"]) == 640
     assert {a[0] for a in answers["documents"]} == {"accepted", "refused"}
+    assert len(answers["extras"]) == 21
+    assert sum(a[0] == "accepted" for a in answers["documents"]) == 124
     assert answer_digest(answers) == BRIDGE_DIGEST
 
 
