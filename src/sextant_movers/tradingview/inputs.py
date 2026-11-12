@@ -7,11 +7,14 @@ Build on gerrymanoim/exchange_calendars@4.13.2
  dbe38b1f6887434bbdd1a7d2df6ff8f1742a048a:exchange_calendars/calendar_utils.py:237,
 exchange_calendars/exchange_calendar.py:1263 (bounded XNYS calendar, is_session).
 Build on python/cpython@v3.13.18 0d4bd512fc429e3d4eacdd113c975e161f21644d:
-Doc/library/datetime.rst:183,208,1062; Doc/library/json.rst:308; Doc/library/re.rst:670,952.
+Doc/library/datetime.rst:183,208,1062; Doc/library/json.rst:308,639;
+Doc/library/re.rst:670,952; Lib/pathlib/_local.py:539; Doc/library/pathlib.rst:1179;
+Doc/library/io.rst:120 (explicit text encoding).
 Wire grammar: RFC 3339 section 5.6, read 2026-11-11; reference extensions retained.
 Acceptance: the reference, src/sextant/tradingview/inputs.py:1-252 at
 06562bec0898a7203f4eaf69086ced83d2477e6b. Caller supplies max_age; unused slot omitted;
-ET is shared. sessions.py exports no public date-only calendar query, so retain this calendar.
+Departures: ET and the named session bounds are shared with sessions.py; JSON reads use UTF-8
+instead of the host locale. sessions.py exports no public date-only query, so retain this calendar.
 The four acceptance bounds are UNCALIBRATED Registry rows, never measured success.
 """
 
@@ -20,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import cache
 from pathlib import Path
@@ -30,7 +33,7 @@ from exchange_calendars import get_calendar
 from nautilus_trader.core.datetime import _datetime_to_unix_nanos, dt_to_unix_nanos
 from pandas import Timestamp
 
-from sextant_movers.sessions import ET
+from sextant_movers.sessions import ET, OVERNIGHT_START, PRE_START
 
 NAMES = ("NS movers", "NS focus")
 QUALIFIED = re.compile(r"[A-Z0-9_]+:[A-Z0-9_.!\-]+\Z")
@@ -99,8 +102,8 @@ def _calendar(year: int):
 
 def _session(at: datetime) -> tuple[str, bool]:
     local = at.astimezone(ET)
-    overnight = local.time() >= time(20) or local.time() < time(4)
-    day = local.date() + timedelta(days=1) if local.time() >= time(20) else local.date()
+    overnight = local.time() >= OVERNIGHT_START or local.time() < PRE_START
+    day = local.date() + timedelta(days=1) if local.time() >= OVERNIGHT_START else local.date()
     if not _calendar(day.year).is_session(day):
         raise InputError("No supported XNYS trading date for this input")
     return day.isoformat(), overnight
@@ -108,7 +111,7 @@ def _session(at: datetime) -> tuple[str, bool]:
 
 def _read(path: Path) -> dict[str, Any]:
     try:
-        doc = json.loads(path.read_text(), parse_float=Decimal)
+        doc = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
         if isinstance(doc, dict):
             return doc
     except (OSError, ValueError):
