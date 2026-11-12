@@ -110,7 +110,7 @@ def read(paced: Any, **changes: Any) -> tuple[Movers, MostActives]:
 
 def plain_client() -> tuple[ScreenerClient, Session, list[str]]:
     events: list[str] = []
-    plain = ScreenerClient(
+    plain: Any = ScreenerClient(
         api_key="key-id",
         secret_key="secret-key",  # noqa: S106 (SDK's explicit test placeholder)
     )

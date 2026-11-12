@@ -6,6 +6,7 @@ Build on alpacahq/alpaca-py v0.44.0 cc4cb3b7ba50ae250e621983c2779047fb16bb28:
 metrics and markets; `alpaca/data/models/screener.py:8-68` the entries and answers;
 `alpaca/common/rest.py:85-135,176-210` the retry loop and one-request hook.
 The wait follows `PacedStockBars`; pairing uses `RankingGeneration` and `RankingRow`.
+`read` refuses an unpaced client, as `AlpacaBarSource` does.
 Bounds: https://docs.alpaca.markets/us/reference/movers-1.md (1 to 50 per side) and
 https://docs.alpaca.markets/us/reference/mostactives-1.md (1 to 100), read 2026-11-11
 as recorded in docs/landscape.md. Neither page specifies a plan or numeric rate limit.
@@ -40,9 +41,11 @@ class PacedScreener(ScreenerClient):
 
 
 def read(
-    client: ScreenerClient, *, movers_top: int, actives_top: int, by: MostActivesBy
+    client: PacedScreener, *, movers_top: int, actives_top: int, by: MostActivesBy
 ) -> tuple[Movers, MostActives]:
     """Read the SDK's stock movers, then most actives, with caller-selected sizes and metric."""
+    if not isinstance(client, PacedScreener):
+        raise ValueError("screener reads need the paced transport, PacedScreener")
     if type(movers_top) is not int or not 1 <= movers_top <= 50:
         raise ValueError("movers_top must be an integer from 1 to 50")
     if type(actives_top) is not int or not 1 <= actives_top <= 100:
