@@ -9,11 +9,11 @@ import json
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
 from nautilus_trader.model import AggressorSide, InstrumentId, Price, Quantity, TradeId, TradeTick
-from sextant_movers.tradingview.host import BarFidelityHost, load_symbol_map
 from test_producer import AUTH, CONSTRUCTOR, MEMBERS, SCOPE, SLOT
 from test_publisher import NAMES, NS, ready, registry
 
@@ -22,6 +22,7 @@ from sextant_movers.ranking.bars import MINUTE_NS, Bar, BarPoll
 from sextant_movers.ranking.engine import rank_movers
 from sextant_movers.ranking.generation import Coverage, CoverageState
 from sextant_movers.tradingview import host as module
+from sextant_movers.tradingview.host import BarFidelityHost, load_symbol_map
 from sextant_movers.tradingview.inputs import REFUSED_PREFIXES
 from sextant_movers.tradingview.producer import Clocks
 
@@ -95,7 +96,7 @@ def test_constructor_refuses_missing_mapping(factory, mapping):
 @pytest.mark.parametrize("key", ["scope", "paper_slot"])
 def test_scope_and_slot_required_keywords(factory, key):
     host = factory()
-    kw = dict(
+    kw: dict[str, Any] = dict(
         lease=host.lease, scope=SCOPE, paper_slot=SLOT, sip_authority=AUTH, symbol_map=MEMBERS
     )
     kw.pop(key)
@@ -236,7 +237,9 @@ def test_mid_batch_error_retains_earlier_feed_without_setting_coverage(factory, 
 @pytest.mark.parametrize("failed", [False, True])
 def test_failed_or_unrequested_symbol_holds_earliest_gap(factory, failed):
     host = factory()
-    kw = {"failed": (NAME,)} if failed else {"requested": tuple(n for n in NAMES if n != NAME)}
+    kw: dict[str, Any] = (
+        {"failed": (NAME,)} if failed else {"requested": tuple(n for n in NAMES if n != NAME)}
+    )
     ingest(host, **kw)
     ingest(host, minute=2, **kw)
     assert host._gaps == {NAME: START + MINUTE_NS}
@@ -324,6 +327,7 @@ def test_post_anchor_one_nanosecond_inside_and_covered(factory):
     ingest(host, [bar()])
     state = pub.states[NAME]
     anchor = state.history.price_at(START + 1)
+    assert anchor is not None
     assert anchor.ts_event == START + 1 and state.segment_covered
     assert state.segment_dollar_volume == D("21")
 
@@ -440,6 +444,8 @@ def test_map_extra_name_null_and_duplicate_json_keys_retained(tmp_path):
 
 def test_independent_direct_replay_ranks_and_no_venue_in_document(factory, tmp_path):
     host, direct = factory(), ready()
+    unit: dict[str, Any] = {}
+    at = START
     for minute in range(8):
         items = [
             bar(minute, symbol=n, close=D(2) + D(minute + i) / 100, trades=3 + i)
@@ -490,7 +496,8 @@ def test_independent_direct_replay_ranks_and_no_venue_in_document(factory, tmp_p
             assert unit["paper_slot"] == SLOT
             assert all("venue" not in key.lower() for key in unit)
             assert ".SIM" not in json.dumps(unit) and "ZZVENUE" not in json.dumps(unit)
-    host.symbol_map[NAME] = None
+    selected = unit["watchlists"]["NS Ranked"][0].split(":", 1)[1]
+    host.symbol_map[selected] = None
     assert host.publish(tmp_path / "unit", now=at + NS)["reason"] == MAP_ERROR
 
 
@@ -529,6 +536,7 @@ def test_source_boundaries_and_departures():
     assert not set(constants).intersection(
         REFUSED_PREFIXES | {"alpaca-market-data", "paper-slot-2"}
     )
+    assert 2 not in constants
     assert not hasattr(module, "SCOPE") and not hasattr(module, "DISPLAY_PAPER_SLOT")
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     attrs = [n.func.attr for n in calls if isinstance(n.func, ast.Attribute)]
@@ -550,3 +558,7 @@ def test_source_boundaries_and_departures():
     # last_close is subscript assignment only; symbol_map is read by publish, lease only stored.
     assert source.count("self.last_close") == 2
     assert source.count("self.lease") == 1
+    assert module.RECEIPT_SOURCE == ("bar fidelity SIP minute bars through the shared REST pacer")
+    assert module.Bar is Bar and module.BarPoll is BarPoll
+    assert module.WriterLease is WriterLease and module.AccountScope is AccountScope
+    assert module.REFUSED_PREFIXES is REFUSED_PREFIXES
