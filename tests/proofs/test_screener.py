@@ -416,18 +416,45 @@ def test_sdk_screener_import_is_not_an_import_of_our_screener(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "package"),
     [
-        "import sextant_movers.ranking.screener\n",
-        "import sextant_movers.ranking.screener as shown\n",
-        "from sextant_movers.ranking import screener\n",
-        "from sextant_movers.ranking.screener import read\n",
+        ("import sextant_movers.ranking.screener\n", ""),
+        ("import sextant_movers.ranking.screener as shown\n", ""),
+        ("from sextant_movers.ranking import screener\n", ""),
+        ("from sextant_movers.ranking.screener import read\n", ""),
+        ("from . import screener\n", "sextant_movers.ranking"),
+        ("from .screener import read\n", "sextant_movers.ranking"),
+        ("from ..ranking import screener\n", "sextant_movers.tradingview"),
+        ("from ..ranking.screener import read\n", "sextant_movers.tradingview"),
     ],
 )
-def test_an_import_of_our_screener_is_seen(tmp_path: Path, line: str) -> None:
+def test_an_import_of_our_screener_is_seen(tmp_path: Path, line: str, package: str) -> None:
     path = tmp_path / "module.py"
     path.write_text(line)
-    assert imports_screener(path)
+    assert imports_screener(path, package)
+
+
+@pytest.mark.parametrize(
+    ("line", "package"),
+    [
+        ("from . import screener\n", "alpaca.data.historical"),
+        ("from .screener import read\n", "sextant_movers.tradingview"),
+        ("from . import generation\n", "sextant_movers.ranking"),
+    ],
+)
+def test_a_relative_import_of_another_module_is_not_ours(
+    tmp_path: Path, line: str, package: str
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(line)
+    assert not imports_screener(path, package)
+
+
+def test_a_relative_import_without_its_package_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "module.py"
+    path.write_text("from . import screener\n")
+    with pytest.raises(ImportError):
+        imports(path)
 
 
 def test_screener_stays_beside_the_rank_and_out_of_both_contracts() -> None:
