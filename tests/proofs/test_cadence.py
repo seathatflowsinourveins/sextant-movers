@@ -6,9 +6,12 @@ Package resources: python/cpython@v3.13.18
 
 import ast
 import copy
+import hashlib
+import inspect
 import json
+import random
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -420,3 +423,259 @@ def test_source_only_policy_dependencies_no_writes_network_or_scheduling() -> No
                     "start",
                     "replace_file",
                 }
+
+
+def seeded_cases() -> list[dict[str, Any]]:
+    rng = random.Random(60211)  # noqa: S311 - deterministic synthetic registry cases
+    cases = []
+    zones = [ET, UTC, ZoneInfo("Asia/Tokyo"), ZoneInfo("Europe/London")]
+    days = [
+        "2026-11-14",
+        "2026-12-25",
+        "2026-11-27",
+        "2026-03-08",
+        "2026-11-01",
+        "2026-03-06",
+        "2026-03-09",
+    ]
+    bounds = [
+        "display_start_minute_et",
+        "am_start_minute_et",
+        "am_end_minute_et",
+        "pm_start_minute_et",
+        "pm_end_minute_et",
+        "display_end_minute_et",
+    ]
+    for index in range(240):
+        edges = sorted(rng.sample(range(1441), 6))
+        values = dict(zip(bounds, edges, strict=True))
+        onset = rng.randint(1, 500)
+        regular = onset + rng.randint(0, 500)
+        threshold = rng.randint(0, 100)
+        values.update(
+            enabled=rng.randrange(2),
+            onset_floor_s=onset,
+            regular_floor_s=regular,
+            usage_floor_s=regular + rng.randint(0, 1000),
+            weekly_usage_backoff_pct=threshold,
+        )
+        doc = document(**values)
+        fault = rng.randrange(28)
+        # Each case has at most one fault; remaining choices keep a valid policy.
+        if fault == 0:
+            doc["schema"] = "zz-wrong"
+        elif fault == 1:
+            doc["rows"].pop()
+        elif fault == 2:
+            doc["rows"].append(copy.deepcopy(doc["rows"][0]))
+        elif fault == 3:
+            doc["rows"][1] = copy.deepcopy(doc["rows"][0])
+        elif fault == 4:
+            doc["rows"][0]["name"] = "zz-unknown"
+        elif fault == 5:
+            doc["rows"][0]["unit"] = "zz-wrong"
+        elif fault == 6:
+            doc["rows"][0]["value"] = True
+        elif fault == 7:
+            doc["rows"][0]["source"] = " "
+        elif fault == 8:
+            doc["rows"][0]["calibration_state"] = "UNAVAILABLE"
+        elif fault == 9:
+            doc["rows"][0]["zz-extra"] = 1
+        elif fault == 10:
+            del doc["rows"][0]["value"]
+        elif fault == 11:
+            doc["rows"][0]["last_change"] = "zz-not-date"
+        elif fault == 12:
+            doc["rows"][0]["value"] = 2
+        elif fault == 13:
+            doc["rows"][7]["value"] = regular - 1
+        elif fault == 14:
+            del doc["schema"]
+        elif fault == 15:
+            del doc["rows"]
+        text = json.dumps(doc)
+        if fault == 16:
+            text = "{"
+        elif fault == 17:
+            text = "[]"
+        elif fault == 18:
+            text = None
+        nows = set()
+        for edge in edges:
+            for offset in (-1, 0, 1):
+                instant = at(0) + timedelta(minutes=edge + offset)
+                nows.add(instant.astimezone(rng.choice(zones)).isoformat())
+        for day in days:
+            for minute in (90, 930):
+                instant = at(minute, day)
+                nows.add(instant.astimezone(rng.choice(zones)).isoformat())
+        # Both folds on the fall clock-change day and the spring transition gap in UTC.
+        nows.update([at(90, "2026-11-01").replace(fold=fold).isoformat() for fold in (0, 1)])
+        nows.add("2026-03-08T07:00:00+00:00")
+        while len(nows) < 48:
+            instant = at(rng.randrange(1440), rng.choice([*days, "2026-11-11"]))
+            nows.add(instant.astimezone(rng.choice(zones)).isoformat())
+        cases.append(
+            {
+                "text": text,
+                "nows": sorted(nows),
+                "index": index,
+                "fault": fault,
+                "usages": [str(threshold - 1), str(threshold), str(threshold + 1)],
+            }
+        )
+    return cases
+
+
+def cadence_answers(factory: Any, cases: list[dict[str, Any]]) -> list[Any]:
+    """Same file text and instants on both sides; no reference import in this process."""
+    import tempfile
+
+    def error(exc):
+        if str(exc) in {
+            "missing or duplicate cadence registry row",
+            "sourced UNCALIBRATED integer cadence rows required",
+            "invalid cadence policy bounds",
+        }:
+            return ["refused", str(exc)]
+        return ["exception", type(exc).__name__]
+
+    answers = []
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "zz-policy.json"
+        for case in cases:
+            if case["text"] is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(case["text"])
+            try:
+                gate = factory(path)
+            except Exception as exc:
+                answers.append(error(exc))
+                continue
+            floors = []
+            for clock in case["nows"]:
+                for usage in case["usages"]:
+                    try:
+                        floors.append(gate.floor(datetime.fromisoformat(clock), Decimal(usage)))
+                    except Exception as exc:
+                        floors.append(error(exc))
+            answers.append(["accepted", gate.params_hash, floors])
+    return answers
+
+
+def parity_counts(answers: list[Any]) -> tuple[int, int, int, int]:
+    accepted = [answer for answer in answers if answer[0] == "accepted"]
+    return (
+        len(answers),
+        len(accepted),
+        len(answers) - len(accepted),
+        sum(len(answer[2]) for answer in accepted),
+    )
+
+
+SEEDED_DIGEST = "4a3ff6ff260c63cf55894c5c63dc211be6cad6547c2d63e1699c7dce5daf8149"
+
+
+def test_seeded_cadence_answers_digest() -> None:
+    cases = seeded_cases()
+    answers = cadence_answers(policy.CadencePolicy, cases)
+    count, accepted, refused, floors = parity_counts(answers)
+    assert count >= 200 and accepted > 0 and refused > 0 and floors >= 4000
+    assert all(len(case["nows"]) >= 40 for case in cases)
+    assert {answer[0] for answer in answers} == {"accepted", "refused", "exception"}
+    payload = json.dumps(answers, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(payload.encode()).hexdigest() == SEEDED_DIGEST
+
+
+CADENCE_PARITY = """
+import hashlib, os, sys, tempfile
+payload = json.loads(sys.stdin.read())
+assert list(sys.version_info[:3]) == payload["versions"], "STOP: Python versions differ"
+src = Path(os.environ["MOVERS_REFERENCE_SRC"])
+for relative, expected in [
+    ("sextant/tradingview/cadence.py", "22fee1114ebc9f48177dd0e9743bfcf900424eea"),
+    ("sextant/tradingview/inputs.py", "83bb85dfb9e2833430b6d95b010dced8f6e47a49"),
+    ("../lanes/tradingview/j5-cadence.params.json", "41627ac0640740c3fcf9a67d971c7f30a9beb5db"),
+]:
+    blob = (src / relative).read_bytes()
+    assert hashlib.sha1(b"blob %d\\0" % len(blob) + blob).hexdigest() == expected
+sys.path.insert(0, str(src))
+from sextant.tradingview.cadence import Cadence
+assert os.path.samefile(sys.modules[Cadence.__module__].__file__,
+                        src / "sextant/tradingview/cadence.py")
+guarding = [False]
+def no_constructor_side_effect(event, args):
+    if not guarding[0]:
+        return
+    if event == "fcntl.flock" or event in {"os.mkdir", "os.remove", "os.rename"}:
+        raise AssertionError("STOP: reference constructor attempted a write or lock")
+    if event == "open":
+        mode, flags = args[1:3]
+        assert not (isinstance(mode, str) and any(k in mode for k in "wax+")), (
+            "STOP: reference constructor attempted a write"
+        )
+        assert not (isinstance(flags, int) and flags & (
+            os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        )), "STOP: reference constructor attempted a write"
+sys.addaudithook(no_constructor_side_effect)
+def factory(path):
+    guarding[0] = True
+    try:
+        return Cadence(path.parent / "zz-state", path, page=lambda _: None)
+    finally:
+        guarding[0] = False
+answers = cadence_answers(factory, payload["cases"])
+with tempfile.TemporaryDirectory() as folder:
+    registry = Path(folder) / "zz-shipped.json"
+    registry.write_text(payload["shipped"])
+    gate = factory(registry)
+    shipped = {"params": dict(gate.params), "hash": gate.params_hash}
+    assert list(Path(folder).iterdir()) == [registry], "STOP: constructor wrote state"
+reference = json.loads((src.parent / "lanes/tradingview/j5-cadence.params.json").read_text())
+fields = ("name", "unit", "value", "calibration_state")
+rows = [[row[key] for key in fields] for row in reference["rows"]]
+reference_hash = hashlib.sha256(json.dumps(
+    sorted(reference["rows"], key=lambda row: row["name"]), sort_keys=True
+).encode()).hexdigest()
+print("PARITY " + json.dumps({"versions": list(sys.version_info[:3]), "answers": answers,
+                             "shipped": shipped, "rows": rows, "reference_hash": reference_hash}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_cadence_reference_parity_and_shipped_file() -> None:
+    import sys
+
+    import reference_child as child
+
+    src, python = child.reference()
+    cases = seeded_cases()
+    versions = list(sys.version_info[:3])
+    payload = {"cases": cases, "shipped": RESOURCE.read_text(), "versions": versions}
+    script = (
+        "import json\nfrom datetime import datetime\nfrom decimal import Decimal\n"
+        "from pathlib import Path\nfrom typing import Any\n"
+        + inspect.getsource(cadence_answers)
+        + CADENCE_PARITY
+    )
+    theirs = child.run(python, src, script, stdin=json.dumps(payload))
+    assert versions == theirs["versions"], "STOP: Python versions differ"
+    ours = cadence_answers(policy.CadencePolicy, cases)
+    for case, actual, expected in zip(cases, ours, theirs["answers"], strict=True):
+        assert actual == expected, f"cadence case differs at {case['index']}"
+    with as_file(RESOURCE) as registry:
+        gate = policy.CadencePolicy(registry)
+    assert theirs["shipped"] == {"params": dict(gate.params), "hash": gate.params_hash}
+    assert gate.params_hash != theirs["reference_hash"]
+    fields = ("name", "unit", "value", "calibration_state")
+    assert theirs["rows"] == [
+        [row[key] for key in fields] for row in json.loads(RESOURCE.read_text())["rows"]
+    ]
+    count, accepted, refused, floors = parity_counts(ours)
+    print(f"\nPython: here {versions}, reference {theirs['versions']}")
+    print(
+        f"cadence parity: {count} files, {accepted} accepted, {refused} refused, "
+        f"{floors} floor answers; shipped params and hash equal, reference row order equal"
+    )
