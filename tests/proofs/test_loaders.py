@@ -392,7 +392,7 @@ def test_departures_required_paths_no_module_path_defaults_and_no_network_or_wri
         with pytest.raises(TypeError):
             call()  # type: ignore[call-arg]
     tree = ast.parse(Path(loaders.__file__).read_text(encoding="utf-8"))
-    assert [n.targets[0].id for n in tree.body if isinstance(n, ast.Assign)] == [
+    assert [ast.unparse(n.targets[0]) for n in tree.body if isinstance(n, ast.Assign)] == [
         "BUDGET_NAME",
         "BOUNDS",
     ]
