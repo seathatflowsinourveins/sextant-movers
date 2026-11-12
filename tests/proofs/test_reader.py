@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 from nautilus_trader.model import CustomData, DataType
-from sextant_movers.ranking.reader import GenerationReader
 from test_publish import NOW, filled, full
 from test_publisher import NS, TYPES, registry
 
@@ -27,6 +26,7 @@ from sextant_movers.ranking.generation import (
     generation_digest,
 )
 from sextant_movers.ranking.publisher import ranking_data_type, universe_digest
+from sextant_movers.ranking.reader import GenerationReader
 
 # Lower fixture thresholds give each row a qualifying focus rank; no authority is shipped.
 REG = registry(mover_min_trades_accel=D("0.01"), mover_min_dvol_ratio=D("0.01"))
@@ -39,7 +39,7 @@ SYMBOL = GEN.rows[0].symbol
 
 
 def make(**over: Any) -> GenerationReader:
-    kw = dict(
+    kw: dict[str, Any] = dict(
         registry=REG,
         feed=PUB.feed,
         segment=SEG,
@@ -63,9 +63,9 @@ def accepted(**over: Any) -> GenerationReader:
     return r
 
 
-def row_change(g: RankingGeneration, index: int = 0, **kw: Any) -> RankingGeneration:
+def row_change(g: RankingGeneration, **kw: Any) -> RankingGeneration:
     rows = list(g.rows)
-    rows[index] = replace(rows[index], **kw)
+    rows[0] = replace(rows[0], **kw)
     return replace(g, rows=tuple(rows))
 
 
@@ -193,9 +193,12 @@ def generation_cases(g: RankingGeneration = GEN) -> dict[str, tuple[Any, int, Da
         add("focus_" + key, row_change(g, **{key: value}), FOCUS)
     for name in ("price", "move_1m", "move", "dvol_ratio", "trades_accel"):
         for suffix, value in (("missing", None), ("below", D(0))):
-            # Removing the score and rank isolates qualification from score validation.
-            base = g if name not in {"move", "dvol_ratio"} else row_change(g, score=None, rank=None)
-            add("focus_" + name + "_" + suffix, feature_change(base, name, value=value), FOCUS)
+            base, reason = g, FOCUS
+            if name in {"move", "dvol_ratio"}:
+                # Missing score inputs are refused before qualification can inspect them.
+                # A zero product keeps the below-threshold cases independently reachable.
+                base, reason = (g, SCORE) if value is None else (row_change(g, score=D(0)), FOCUS)
+            add("focus_" + name + "_" + suffix, feature_change(base, name, value=value), reason)
     add("rank_order", row_change(g, rank=2), "rank order mismatch")
     return cases
 
@@ -205,7 +208,7 @@ CASES = generation_cases()
 
 @pytest.mark.parametrize("key", ["method_version", "eligible_security_types"])
 def test_new_keywords_are_required(key: str) -> None:
-    kw = dict(
+    kw: dict[str, Any] = dict(
         feed=PUB.feed,
         segment=SEG,
         universe_hash="zz",
@@ -537,7 +540,15 @@ def test_foreign_class_with_to_json_is_rebuilt() -> None:
     assert r.generation_key == generation_digest(GEN)
 
 
-@pytest.mark.parametrize("now,ok", [(True, False), (False, False), (float(NOW), True)])
+@pytest.mark.parametrize(
+    "now,ok",
+    [
+        (True, False),
+        (False, False),
+        (float(NOW), False),
+        (float(NOW + NS), True),
+    ],
+)
 def test_now_bool_and_float_are_not_type_checked(now: Any, ok: bool) -> None:
     r = make()
     assert r.accept_generation(envelope(), now=now) is ok
