@@ -11,6 +11,7 @@ import json
 import socket
 from dataclasses import FrozenInstanceError, fields
 from datetime import date, datetime, timedelta
+from importlib.util import resolve_name
 from pathlib import Path
 from typing import Any, get_type_hints
 
@@ -394,18 +395,26 @@ def test_cross_check_refuses_non_models(name: str) -> None:
         m.cross_check(**args)
 
 
-def imports(path: Path) -> set[str]:
+def imports(path: Path, package: str = "") -> set[str]:
+    """Absolute names a file imports; a relative one is resolved against `package`."""
     tree = ast.parse(path.read_text())
     result = {alias.name for n in ast.walk(tree) if isinstance(n, ast.Import) for alias in n.names}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            result.add(node.module or "")
-            result.update(f"{node.module or ''}.{alias.name}" for alias in node.names)
+            module = resolve_name("." * node.level + (node.module or ""), package)
+            result.add(module)
+            result.update(f"{module}.{alias.name}" for alias in node.names)
     return result
 
 
-def imports_screener(path: Path) -> bool:
-    return any(name == m.__name__ or name.startswith(m.__name__ + ".") for name in imports(path))
+def imports_screener(path: Path, package: str = "") -> bool:
+    return any(
+        name == m.__name__ or name.startswith(m.__name__ + ".") for name in imports(path, package)
+    )
+
+
+def package_of(path: Path) -> str:
+    return ".".join(path.relative_to(ROOT / "src").parent.parts)
 
 
 def test_sdk_screener_import_is_not_an_import_of_our_screener(tmp_path: Path) -> None:
@@ -416,26 +425,55 @@ def test_sdk_screener_import_is_not_an_import_of_our_screener(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "package"),
     [
-        "import sextant_movers.ranking.screener\n",
-        "import sextant_movers.ranking.screener as shown\n",
-        "from sextant_movers.ranking import screener\n",
-        "from sextant_movers.ranking.screener import read\n",
+        ("import sextant_movers.ranking.screener\n", ""),
+        ("import sextant_movers.ranking.screener as shown\n", ""),
+        ("from sextant_movers.ranking import screener\n", ""),
+        ("from sextant_movers.ranking.screener import read\n", ""),
+        ("from . import screener\n", "sextant_movers.ranking"),
+        ("from .screener import read\n", "sextant_movers.ranking"),
+        ("from ..ranking import screener\n", "sextant_movers.tradingview"),
+        ("from ..ranking.screener import read\n", "sextant_movers.tradingview"),
     ],
 )
-def test_an_import_of_our_screener_is_seen(tmp_path: Path, line: str) -> None:
+def test_an_import_of_our_screener_is_seen(tmp_path: Path, line: str, package: str) -> None:
     path = tmp_path / "module.py"
     path.write_text(line)
-    assert imports_screener(path)
+    assert imports_screener(path, package)
+
+
+@pytest.mark.parametrize(
+    ("line", "package"),
+    [
+        ("from . import screener\n", "alpaca.data.historical"),
+        ("from .screener import read\n", "sextant_movers.tradingview"),
+        ("from . import generation\n", "sextant_movers.ranking"),
+    ],
+)
+def test_a_relative_import_of_another_module_is_not_ours(
+    tmp_path: Path, line: str, package: str
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(line)
+    assert not imports_screener(path, package)
+
+
+def test_a_relative_import_without_its_package_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "module.py"
+    path.write_text("from . import screener\n")
+    with pytest.raises(ImportError):
+        imports(path)
 
 
 def test_screener_stays_beside_the_rank_and_out_of_both_contracts() -> None:
     own_path = Path(m.__file__)
     for path in (ROOT / "src" / "sextant_movers").rglob("*.py"):
         if path != own_path:
-            assert not imports_screener(path), path
-    local = {name for name in imports(own_path) if name.startswith("sextant_movers")}
+            assert not imports_screener(path, package_of(path)), path
+    assert package_of(own_path) == "sextant_movers.ranking"
+    own = imports(own_path, package_of(own_path))
+    local = {name for name in own if name.startswith("sextant_movers")}
     assert all(
         name.startswith(("sextant_movers.ranking.generation", "sextant_movers.ranking.bars"))
         for name in local
