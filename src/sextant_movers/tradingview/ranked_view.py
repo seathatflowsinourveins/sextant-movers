@@ -9,6 +9,9 @@ https://html.spec.whatwg.org/multipage/semantics.html#attr-meta-http-equiv-refre
 The generation's facts and the page text follow the reference's
 `src/sextant/tradingview/ranked_view.py:1-245` at
 `06562bec0898a7203f4eaf69086ced83d2477e6b`. No host, script or external reference.
+Departures from the reference: unknown coverage counts use this page's `n/a` convention;
+`top_n` must be a positive integer, using `ranking/registry.py`'s `_check_row` refusal form.
+Negative slice indices count from the end (CPython pin above, `Doc/builtins/stdtypes.rst:1047`).
 Numbers are quantized Decimals with their exact string in `title`. STALE is computed only
 at render time, past the caller's `max_age_s`; the table cuts ranked rows to `top_n`.
 """
@@ -66,9 +69,18 @@ def view_rows(generation: RankingGeneration) -> list[dict[str, Any]]:
     return rows
 
 
+def _check_top_n(value: Any) -> int:
+    if type(value) is not int:
+        raise TypeError("top_n must be int, never float or bool")
+    if value < 1:
+        raise ValueError("top_n: non-positive value")
+    return value
+
+
 def generation_view(
     generation: RankingGeneration, *, segment: str, top_n: int, universe_source: str
 ) -> dict[str, Any]:
+    _check_top_n(top_n)
     coverage = generation.coverage
     rows = view_rows(generation)
     return {
@@ -145,6 +157,7 @@ def render_html(document: Mapping[str, Any], *, now_ns: int) -> str:
     facts: list[tuple[str, str]] = [("Page written", _clock(int(document["written_at_ns"])))]
     body = ""
     if generation is not None:
+        top_n = _check_top_n(generation["top_n"])
         generated = int(generation["generated_at_ns"])
         age_s = max(0, now_ns - generated) // NS
         if age_s > max_age_s:
@@ -152,6 +165,8 @@ def render_html(document: Mapping[str, Any], *, now_ns: int) -> str:
         elif document["status"] == "fresh":
             states.append(("fresh", "FRESH"))
         coverage = generation["coverage"]
+        observed = "n/a" if coverage["observed_symbols"] is None else coverage["observed_symbols"]
+        expected = "n/a" if coverage["expected_symbols"] is None else coverage["expected_symbols"]
         facts += [
             ("Generated", f"{_clock(generated)} (age {age_s} s at render)"),
             ("Stale after", _clock(generated + max_age_s * NS)),
@@ -159,12 +174,12 @@ def render_html(document: Mapping[str, Any], *, now_ns: int) -> str:
             (
                 "Coverage",
                 f"{coverage['state']}, complete {coverage['complete']}, "
-                f"{coverage['observed_symbols']} of {coverage['expected_symbols']} observed",
+                f"{observed} of {expected} observed",
             ),
             (
                 "Ranked",
                 f"{generation['ranked']} of {generation['rows_total']} names "
-                f"(table shows the top {generation['top_n']})",
+                f"(table shows the top {top_n})",
             ),
             ("Universe", generation["universe_source"]),
         ]
@@ -175,7 +190,7 @@ def render_html(document: Mapping[str, Any], *, now_ns: int) -> str:
             + "<th>Focus</th><th>Reasons</th></tr>"
         )
         cells = []
-        for row in generation["rows"][: int(generation["top_n"])]:
+        for row in generation["rows"][:top_n]:
             passed = set(row["gates_passed"])
             gates = "".join(
                 '<td class="yes">yes</td>' if gate in passed else '<td class="no">no</td>'
