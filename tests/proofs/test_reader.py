@@ -464,16 +464,18 @@ def test_entry_each_asset_link_alone(case: str) -> None:
     assert r.entry_rank(SYMBOL, now=NOW) is None and r.reason == "fresh"
 
 
-@pytest.mark.parametrize("detail", [None, "{", "{}", "null", "0", '"zz"', "[]"])
+@pytest.mark.parametrize("detail", [None, "{", "{}"])
 def test_entry_malformed_asset_returns_none(detail: Any) -> None:
     r = accepted()
     r.generation = reason_change(GEN, "ASSET", detail)
-    # A non-object JSON raises AttributeError in the reference: kept and reported.
-    if detail in {"null", "0", '"zz"', "[]"}:
-        with pytest.raises(AttributeError):
-            r.entry_rank(SYMBOL, now=NOW)
-    else:
-        assert r.entry_rank(SYMBOL, now=NOW) is None
+    assert r.entry_rank(SYMBOL, now=NOW) is None
+
+
+@pytest.mark.parametrize("detail", ["null", "0", '"zz"', "[]", "true"])
+def test_entry_non_object_asset_returns_none(detail: str) -> None:
+    r = accepted()
+    r.generation = reason_change(GEN, "ASSET", detail)
+    assert r.entry_rank(SYMBOL, now=NOW) is None and r.reason == "fresh"
 
 
 @pytest.mark.parametrize("count", [0, 2])
@@ -538,6 +540,17 @@ def test_foreign_class_with_to_json_is_rebuilt() -> None:
     assert r.accept_generation(envelope(Copy()), now=NOW)
     assert r.generation == GEN and r.generation is not GEN
     assert r.generation_key == generation_digest(GEN)
+
+
+@pytest.mark.parametrize("error", [ValueError, KeyError, TypeError, AttributeError, ArithmeticError])
+def test_generation_catches_each_exception_class(error: type[Exception]) -> None:
+    class Broken(Copy):
+        def to_json(self) -> str:
+            raise error("zz-broken")
+
+    r = accepted()
+    assert not r.accept_generation(envelope(Broken()), now=NOW)
+    assert r.reason == str(error("zz-broken")) and r.generation is r.generation_key is None
 
 
 @pytest.mark.parametrize(

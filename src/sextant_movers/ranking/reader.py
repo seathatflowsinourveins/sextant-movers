@@ -11,10 +11,12 @@ freshness, source or generation-sequence check. Those checks compose this packag
 generation and registry, by ADR-0002 and the design's display path.
 
 Source: the reference's `src/sextant/ranking/reader.py:20-270` at
-`06562bec0898a7203f4eaf69086ced83d2477e6b`, rebuilt value for value. The two departures:
+`06562bec0898a7203f4eaf69086ced83d2477e6b`, rebuilt value for value. Two injected inputs:
 method version and eligible security types are required constructor keywords, checked as the
 publisher checks them and used for identity and asset eligibility. No value is shipped. A refusal
 drops the held generation with no fallback; heartbeat and lineage follow the reference's rules.
+One correction: a non-object ASSET JSON returns None, as malformed JSON already does, so an
+uncaught AttributeError cannot stop the caller's tick.
 Nothing here starts a stream, a socket, a thread or a node, and nothing here places an order.
 """
 
@@ -278,7 +280,7 @@ class GenerationReader:
                 and 0 <= asset["known_at"] <= now < asset["expires_at"]
             ):
                 return None
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             return None
         if any(
             f.ts_event is None
