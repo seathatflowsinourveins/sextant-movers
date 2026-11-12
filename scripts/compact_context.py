@@ -5,7 +5,10 @@ Source: code.claude.com/docs/en/hooks-guide.md, "Re-inject context after
 compaction"; code.claude.com/docs/en/hooks.md, SessionStart and PreCompact;
 code.claude.com/docs/en/best-practices.md, "Keep cost and context down";
 code.claude.com/docs/en/settings-reference.md, `idleCompaction`. All read
-2026-11-09. Carried from Sextant's scripts/compact_context.py (see ORIGINS.md).
+2026-11-09. Hooks "Common input fields", read 2026-11-11: `agent_id` marks a
+subagent or in-process teammate; both hook modes stay silent when it holds a
+non-empty string.
+Carried from Sextant's scripts/compact_context.py (see ORIGINS.md).
 
 The state folder is private, so this public repository never names it: the
 MOVERS_STATE_DIR variable does, and output shows the variable's name, never its
@@ -116,17 +119,13 @@ def pre_compact(role: str | None, state: Path | None) -> str:
     return EXTRA_KEEP[role]
 
 
-def _role_from(args: list[str], stdin_text: str) -> str | None:
+def _role_from(args: list[str], payload: dict) -> str | None:
     for index, arg in enumerate(args):
         if arg == "--role" and index + 1 < len(args) and args[index + 1] in ROLES:
             return args[index + 1]
         if arg.startswith("--role=") and arg.split("=", 1)[1] in ROLES:
             return arg.split("=", 1)[1]
-    try:
-        payload = json.loads(stdin_text)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    agent = payload.get("agent_type") if isinstance(payload, dict) else None
+    agent = payload.get("agent_type")
     if isinstance(agent, str) and agent in ROLES:
         return agent
     return None
@@ -211,7 +210,18 @@ def main(argv: list[str], stdin_text: str, state: Path | None) -> int:
         if state is None:
             print(UNSET)
         return 0
-    role = _role_from(argv[1:], stdin_text)
+    try:
+        payload = json.loads(stdin_text)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    # A subagent must never inherit a session role's pointer, even via --role.
+    # Only a non-empty string is an identity: null or empty is still a session.
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id:
+        return 0
+    role = _role_from(argv[1:], payload)
     try:
         if argv[0] == MODE_SESSION_START:
             text = session_start(role, state)
