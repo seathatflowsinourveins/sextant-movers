@@ -300,7 +300,7 @@ def test_preface_is_accepted_by_parser_but_refused_by_selection(file: str) -> No
     value = "zz-preface\n" + text(file, row(file))
     assert len(parse_directory(value)) == 1
     with pytest.raises(
-        ValueError, match="^NASDAQ Trader selection requires an exact directory header$"
+        ValueError, match=r"^NASDAQ Trader selection requires an exact directory header$"
     ):
         uni.select(value)
 
@@ -311,5 +311,5 @@ def test_extra_field_is_accepted_by_parser_but_refused_by_selection(file: str) -
 
     value = text(file, row(file) + "|extra")
     assert len(parse_directory(value)) == 1
-    with pytest.raises(ValueError, match="^Malformed NASDAQ Trader selection row$"):
+    with pytest.raises(ValueError, match=r"^Malformed NASDAQ Trader selection row$"):
         uni.select(value)
