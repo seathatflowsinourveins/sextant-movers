@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import reference_child as child
 from test_publisher import ASSET, NAMES, NS, REFS, START, Send, ready, registry, tick
 
 from sextant_movers.ranking import engine, publisher
@@ -521,3 +522,286 @@ def test_both_views_on_the_isolated_engine_bus() -> None:
     )
     assert done.returncode == 0, done.stderr[-2000:]
     assert "BUS two views, one gen each, full identity and top projection" in done.stdout
+
+
+def publish_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
+    """Seeded complete publications and both send transcripts; also executed by the child."""
+    import random
+    from dataclasses import replace
+    from datetime import date
+    from decimal import Decimal as D
+
+    ns, day = 1_000_000_000, date(2030, 11, 29)
+    start = (1_922_140_800 + 9 * 3600) * ns
+    cases = (
+        "ready",
+        "early",
+        "regressed",
+        "ready",
+        "state",
+        "complete",
+        "expected",
+        "observed",
+        "missing",
+        "invalid",
+        "late",
+        "ready",
+        "age",
+        "ready",
+        "start",
+        "event_cutoff",
+        "cutoff_now",
+        "end",
+    )
+    runs = []
+    for run in range(48):
+        rng = random.Random(20261113 + run)  # noqa: S311 - deterministic synthetic input
+        pool = ("ZZVPA", "ZZVPB", "ZZVPC")
+        names = tuple(rng.sample(pool, rng.randint(1, 3)))
+        feed = "sip" if run % 2 else "boats"
+        segment = m["Segment"](
+            "PRE" if feed == "sip" else "OVERNIGHT", day, start, start + 19_800 * ns, "zz-clock"
+        )
+        values = {
+            "mover_min_move": "0.05",
+            "mover_min_trades_accel": "2",
+            "mover_min_dvol_ratio": "0.5",
+            "move_1m_window_s": "60",
+            "move_5m_window_s": "300",
+            "trades_accel_window_s": "60",
+            "trades_accel_baseline_min": "5",
+            "publish_min_interval_s": "1",
+            "input_max_age_s": "2",
+            "top_n": str(run % 3 + 1),
+        }
+        registry = m["Registry"](
+            tuple(
+                m["RegistryRow"](n, u, k(values.get(n, "2")), "zz-source", "UNCALIBRATED", day)
+                for n, k, u in m["rows"]
+            )
+        )
+        curve = ((0, D(0), D(0)), (600, D(rng.randint(200, 900)), D(100)))
+        samples = tuple(
+            m["BaselineSample"](n, segment.name, "2030-11-27", off, volume, count)
+            for n in names
+            for off, volume, count in curve
+        )
+        baseline = m["BaselineTable"](samples, "zz-curve", start - ns, feed)
+        sent: list[Any] = []
+
+        def record(data_type: Any, envelope: Any, sent: list[Any] = sent) -> None:
+            topic = data_type if isinstance(data_type, str) else data_type.topic
+            sent.append([topic, envelope.data.to_json()])
+
+        pub = m["make"](
+            send=record,
+            epoch=f"zz-publish-{run}",
+            feed=feed,
+            segment=segment,
+            registry=registry,
+            universe=names,
+            universe_source="zz-universe",
+            baseline=baseline,
+        )
+        refs = m["ReferencePrices"](D(2), start - ns, "zz-close")
+        for name in names:
+            asset = m["AssetState"](start - ns, segment.end_ns, False, "common", "zz-assets")
+            pub.set_symbol(name, references=refs, asset=asset)
+            for sec, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
+                trade = nt.TradeTick(
+                    nt.InstrumentId.from_str(name + ".SIM"),
+                    nt.Price.from_str(price),
+                    nt.Quantity.from_int(rng.randint(1, 20)),
+                    nt.AggressorSide.BUY,
+                    nt.TradeId("zz-warm"),
+                    start + sec * ns,
+                    start + sec * ns,
+                )
+                pub.on_trade(trade)
+        now, steps = start + 360 * ns + 100, []
+        for index, case in enumerate(cases):
+            coverage = m["Coverage"](
+                m["CoverageState"].READY, True, len(names), len(names), 0, 0, 0
+            )
+            if case in ("early", "regressed"):
+                at = pub.published_at + (rng.choice((0, ns - 1)) if case == "early" else -1)
+            else:
+                if index:
+                    now += 2 * ns
+                    for name in names:
+                        asset = rng.choice(
+                            (
+                                None,
+                                m["AssetState"](
+                                    start,
+                                    segment.end_ns,
+                                    rng.choice((False, False, None)),
+                                    rng.choice(("common", "adr", "etf")),
+                                    "zz-assets",
+                                ),
+                            )
+                        )
+                        pub.set_symbol(name, references=refs, asset=asset)
+                        trade = nt.TradeTick(
+                            nt.InstrumentId.from_str(name + ".SIM"),
+                            nt.Price.from_str(rng.choice(("0.70", "2.70", "5.20"))),
+                            nt.Quantity.from_int(rng.randint(1, 20)),
+                            nt.AggressorSide.BUY,
+                            nt.TradeId(f"zz-{index}"),
+                            now - 100,
+                            now - 90,
+                        )
+                        pub.on_trade(trade, known_at=now - 80)
+                pub.last_event, pub.input_cutoff = now - 100, now - 80
+                at = now
+                if case == "state":
+                    states = [s for s in m["CoverageState"] if s is not m["CoverageState"].READY]
+                    coverage = replace(coverage, state=states[run % len(states)])
+                elif case == "complete":
+                    coverage = replace(coverage, complete=False)
+                elif case in ("expected", "observed"):
+                    coverage = replace(coverage, **{case + "_symbols": rng.choice((None, 0, 4))})
+                elif case in ("missing", "invalid", "late"):
+                    coverage = replace(coverage, **{case + "_symbols": rng.choice((None, 1))})
+                elif case == "age":
+                    pub.last_event = at - registry.seconds("input_max_age_s") - 1
+                elif case == "start":
+                    pub.last_event = start - 1
+                elif case == "event_cutoff":
+                    pub.input_cutoff = pub.last_event - 1
+                elif case == "cutoff_now":
+                    pub.input_cutoff = at + 1
+                elif case == "end":
+                    at = segment.end_ns
+                    pub.last_event = pub.input_cutoff = at
+                pub.set_coverage(coverage)
+            before = len(sent)
+            try:
+                generation = pub.publish(now=at)
+                outcome = None if generation is None else ["generation", generation.to_json()]
+            except Exception as error:
+                outcome = ["raised", type(error).__name__, str(error)]
+            steps.append([case, outcome, sent[before:], pub.published_at, pub.sequence])
+        runs.append(steps)
+    return {"runs": runs}
+
+
+def publication_side() -> dict[str, Any]:
+    from test_publisher import EDGES, TYPES
+
+    from sextant_movers.ranking import baseline, registry
+
+    side = {
+        "Segment": baseline.Segment,
+        "BaselineSample": baseline.BaselineSample,
+        "BaselineTable": baseline.BaselineTable,
+        "Registry": registry.Registry,
+        "RegistryRow": registry.RegistryRow,
+        "rows": [(n, k, u) for n, (k, u) in registry.ROWS.items()],
+        "ReferencePrices": engine.ReferencePrices,
+        "AssetState": publisher.AssetState,
+        "Coverage": Coverage,
+        "CoverageState": CoverageState,
+    }
+    side["make"] = lambda **kw: RankingPublisher(
+        method_version="zz-publish-method",
+        eligible_security_types=TYPES,
+        price_band_edges=EDGES,
+        **kw,
+    )
+    return side
+
+
+def publication_counts(answers: dict[str, Any]) -> dict[str, int]:
+    steps = [step for run in answers["runs"] for step in run]
+    generated = [s for s in steps if s[1] and s[1][0] == "generation"]
+    ready = [s for s in generated if json.loads(s[1][1])["coverage"]["state"] == "READY"]
+    ranked = [s for s in ready if any(r["rank"] is not None for r in json.loads(s[1][1])["rows"])]
+    return {
+        "runs": len(answers["runs"]),
+        "calls": len(steps),
+        "generations": len(generated),
+        "ready_ranked": len(ranked),
+        "not_ready": len(generated) - len(ready),
+        "early": sum(s[1] is None for s in steps),
+        "regressed": sum(s[1] is not None and s[1][0] == "raised" for s in steps),
+        "sent_views": sum(len(s[2]) for s in steps),
+    }
+
+
+# The canonical digest pins every outcome, both view transcripts and both state marks.
+PUBLISH_DIGEST = "9867e58ef4534282a83bb1569f0ab261c6e9539a76700af6bc760609b75991eb"
+
+
+def test_seeded_publication_answers_are_pinned() -> None:
+    import hashlib
+
+    import nautilus_trader.model as nt
+
+    answers = publish_answers(publication_side(), nt)
+    counts = publication_counts(answers)
+    assert counts["runs"] >= 40 and counts["calls"] >= 300 and counts["ready_ranked"] >= 100
+    assert counts["not_ready"] > 0 and counts["early"] > 0 and counts["regressed"] > 0
+    payload = json.dumps(answers, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(payload.encode()).hexdigest() == PUBLISH_DIGEST
+
+
+PUBLISH_PARITY = """
+import hashlib, json, os, sys
+src = os.environ["MOVERS_REFERENCE_SRC"]
+path = os.path.join(src, "sextant", "ranking", "publisher.py")
+with open(path, "rb") as handle:
+    blob = handle.read()
+expected_blob = "498ac186d643a137b32f6ff84f9ca76c657fb0ee"
+assert hashlib.sha1(b"blob %d\\0" % len(blob) + blob).hexdigest() == expected_blob
+sys.path.insert(0, src)
+import nautilus_trader
+import nautilus_trader.model as nt
+from sextant.ranking import baseline as bl, engine as en, generation as g, publisher as pb
+from sextant.ranking import registry as rg
+assert os.path.samefile(pb.__file__, path)
+pb.METHOD = "zz-publish-method"
+
+class Bus:
+    def __init__(self, send):
+        self.send = send
+    def publish(self, topic, msg):
+        self.send(topic, msg)
+
+def make(*, send, **kw):
+    return pb.RankingPublisher(bus=Bus(send), **kw)
+
+m = {"Segment": en.Segment, "BaselineSample": bl.BaselineSample,
+     "BaselineTable": bl.BaselineTable, "Registry": rg.Registry, "RegistryRow": rg.RegistryRow,
+     "rows": [(n, k, u) for n, (k, u) in rg.ROWS.items()],
+     "ReferencePrices": en.ReferencePrices, "AssetState": pb.AssetState,
+     "Coverage": g.Coverage, "CoverageState": g.CoverageState, "make": make}
+print("PARITY " + json.dumps({
+    "versions": [list(sys.version_info[:3]), nautilus_trader.__version__],
+    "answers": publish_answers(m, nt),
+}))
+"""
+
+
+@pytest.mark.local
+def test_publication_parity_with_the_reference_in_a_child_interpreter() -> None:
+    import inspect
+
+    import nautilus_trader
+    import nautilus_trader.model as nt
+
+    src, python = child.reference()
+    script = "from typing import Any\n" + inspect.getsource(publish_answers) + PUBLISH_PARITY
+    theirs = child.run(python, src, script)
+    here = [list(sys.version_info[:3]), nautilus_trader.__version__]
+    assert here == theirs["versions"], (
+        f"version mismatch: here {here}, reference {theirs['versions']}"
+    )
+    ours = publish_answers(publication_side(), nt)
+    print(f"\npython, engine: here {here}, reference {theirs['versions']}")
+    print(f"publication parity: {publication_counts(ours)}")
+
+    def canonical(a: Any) -> str:
+        return json.dumps(a, sort_keys=True, separators=(",", ":"))
+
+    assert canonical(ours) == canonical(theirs["answers"])
