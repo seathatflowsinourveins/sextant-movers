@@ -100,9 +100,10 @@ def test_utf8_source_is_accepted_and_hashed(tmp_path: Path) -> None:
     path = tmp_path / "zz-utf8.json"
     path.write_bytes(json.dumps(doc, ensure_ascii=False).encode("utf-8"))
     rows = sorted(doc["rows"], key=lambda r: r["name"])
-    assert policy.CadencePolicy(path).params_hash == hashlib.sha256(
-        json.dumps(rows, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    assert (
+        policy.CadencePolicy(path).params_hash
+        == hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()
+    )
 
 
 def at(minute: int, day: str = "2026-11-11") -> datetime:
