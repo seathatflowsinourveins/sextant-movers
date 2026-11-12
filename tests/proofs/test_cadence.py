@@ -79,6 +79,32 @@ def build(tmp_path: Path, **values: Any):
     return policy.CadencePolicy(write(tmp_path, document(**values)))
 
 
+def test_source_reads_text_as_utf8() -> None:
+    calls = [
+        node
+        for node in ast.walk(ast.parse(Path(policy.__file__).read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "read_text"
+    ]
+    assert calls
+    assert all(
+        any(k.arg == "encoding" and ast.literal_eval(k.value) == "utf-8" for k in c.keywords)
+        for c in calls
+    )
+
+
+def test_utf8_source_is_accepted_and_hashed(tmp_path: Path) -> None:
+    doc = document()
+    doc["rows"][0]["source"] = "zz-caf\u00e9-\u96ea"
+    path = tmp_path / "zz-utf8.json"
+    path.write_bytes(json.dumps(doc, ensure_ascii=False).encode("utf-8"))
+    rows = sorted(doc["rows"], key=lambda r: r["name"])
+    assert policy.CadencePolicy(path).params_hash == hashlib.sha256(
+        json.dumps(rows, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def at(minute: int, day: str = "2026-11-11") -> datetime:
     return datetime.combine(date.fromisoformat(day), datetime.min.time(), ET).replace(
         hour=minute // 60, minute=minute % 60
@@ -193,6 +219,14 @@ def test_kept_raw_document_exceptions(tmp_path, text, exception) -> None:
         path.write_text(text)
     with pytest.raises(exception):
         policy.CadencePolicy(path)
+
+
+def test_non_utf8_source_raises_unicode_decode_error(tmp_path: Path) -> None:
+    path = write(tmp_path, document())
+    path.write_bytes(path.read_bytes().replace(b"zz-synthetic", b"zz-\xff", 1))
+    with pytest.raises(UnicodeDecodeError) as error:
+        policy.CadencePolicy(path)
+    assert isinstance(error.value, ValueError)
 
 
 @pytest.mark.parametrize("value", ["zz-not-date", None, 1])
