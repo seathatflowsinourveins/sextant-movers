@@ -83,7 +83,7 @@ def test_bad_flags_refuse_the_whole_text(file: str, flag: str, value: str, place
     if placement == "otherwise_skipped":
         changes["ETF" if flag == "Test Issue" else "Test Issue"] = "Y"
         changes["Exchange"] = ""
-    damaged = row(file, "ZZ!", **changes)
+    damaged = row(file, "ZZ!" if placement == "otherwise_skipped" else "ZZAA", **changes)
     rows = [row(file), damaged] if placement == "last_after_selected" else [damaged]
     with pytest.raises(ValueError):
         uni.select(text(file, *rows))
