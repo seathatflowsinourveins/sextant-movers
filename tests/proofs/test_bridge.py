@@ -679,17 +679,25 @@ def test_sources_return_is_unused_and_shared_session_bounds(doc, monkeypatch):
 @pytest.mark.parametrize("clock", ["ts_event", "input_cutoff", "known_at"])
 def test_overnight_refuses_for_each_clock(doc, clock):
     gen = generation(doc)
-    # Move all clocks before PRE; then advance a suffix to PRE to isolate each checked clock.
-    changed = shift(doc, -420 * NS)
-    night = generation(changed)
-    kw = (
-        {"input_cutoff": gen.input_cutoff, "known_at": gen.known_at, "ts_init": gen.ts_init}
-        if clock == "ts_event"
-        else ({"known_at": gen.known_at, "ts_init": gen.ts_init} if clock == "input_cutoff" else {})
-    )
-    changed = rebuild(changed, **kw)
-    changed["generated_at_ns"] = generation(changed).known_at
-    assert getattr(night, clock) < START
+    day = gen.session_date - timedelta(days=3)  # synthetic Tuesday before this Friday
+    text = day.isoformat() + ("T08:59:00+00:00" if clock == "ts_event" else "T00:59:00+00:00")
+    if clock != "ts_event":
+        # 19:59 ET on Tuesday; the overnight belongs to Wednesday, both trading dates.
+        text = (day + timedelta(days=1)).isoformat() + "T00:59:00+00:00"
+    changed = shift(doc, inputs._ns(text) - gen.ts_event)
+    shifted = generation(changed)
+    boundary = shifted.ts_event + 60 * NS
+    kw = {"known_at": boundary, "ts_init": boundary}
+    if clock != "known_at":
+        kw["input_cutoff"] = boundary
+    changed = rebuild(changed, session_date=day, **kw)
+    changed.update(generated_at_ns=boundary, expires_at_ns=boundary + 120 * NS)
+    current = generation(changed)
+    order = ("ts_event", "input_cutoff", "known_at")
+    answers = [b._session(inputs.timestamp(b._rfc(getattr(current, key)))) for key in order]
+    index = order.index(clock)
+    assert all(answer == (day.isoformat(), False) for answer in answers[:index])
+    assert answers[index] != (day.isoformat(), False)
     refuse(lambda: project(changed), "j5 generation session mismatch" + SUFFIX)
 
 
@@ -942,7 +950,7 @@ def test_every_accepted_seeded_projection_roundtrips(tmp_path):
             ):
                 write_read(tmp_path, unit, late)
             accepted += 1
-    assert accepted > 0
+    assert accepted == 124
 
 
 BRIDGE_PARITY = r"""
