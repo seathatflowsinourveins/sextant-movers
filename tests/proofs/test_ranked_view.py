@@ -505,7 +505,6 @@ def test_seeded_page_parity_with_the_reference_in_a_child_interpreter() -> None:
     ready = sum(json.loads(source)["coverage"]["state"] == "READY" for source in sources)
     print(f"\nPython: here {here}, reference {theirs['versions']}")
     print(
-        f"page parity: {len(sources)} generations "
-        f"({ready} ready, {len(sources) - ready} not ready)"
+        f"page parity: {len(sources)} generations ({ready} ready, {len(sources) - ready} not ready)"
     )
     print(f"page parity: {len(ours)} documents, sorted JSON and HTML equal per document")
