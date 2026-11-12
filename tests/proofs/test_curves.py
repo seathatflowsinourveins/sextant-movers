@@ -745,3 +745,30 @@ def test_session_choice_overnight_is_not_rejected_by_name() -> None:
     result = choice(day, scope, count=2, candidates=12)
     assert len(result) == 2 and result == tuple(sorted(result))
     assert all(actual_segment(d, 20).name == "OVERNIGHT" for d in result)
+
+
+def test_session_choice_checks_probe_name_exact_anchor_and_span(monkeypatch) -> None:
+    days = tuple(DAY + timedelta(days=i) for i in range(6))
+    scope = segment()
+    monkeypatch.setattr(curves, "prior_sessions", lambda day, *, count: days)
+    probes = []
+
+    def find(probe):
+        probes.append(probe)
+        day = datetime.fromtimestamp(probe // NS, ET).date()
+        anchor = curves._session_start(day, scope)
+        found = Segment("PRE", day, anchor, anchor + scope.end_ns - scope.start_ns, "zz")
+        index = days.index(day)
+        if index == 5:
+            found = None
+        elif index == 4:
+            found = replace(found, name="POST")
+        elif index == 3:
+            found = replace(found, start_ns=anchor - NS)
+        elif index == 2:
+            found = replace(found, end_ns=found.end_ns - NS)
+        return found, day, anchor
+
+    monkeypatch.setattr(curves, "segment_start", find)
+    assert choice(DAY, scope, count=2, candidates=6) == days[:2]
+    assert probes == [curves._session_start(d, scope) + NS for d in reversed(days)]

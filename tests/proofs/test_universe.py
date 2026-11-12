@@ -247,3 +247,69 @@ def test_imports_are_stdlib_and_listings_constants_only() -> None:
         for a in n.names
     }
     assert names == {"HEADERS", "OTHER_LISTED_EXCHANGES"}
+
+
+def test_seeded_selection_is_a_subset_of_parsed_non_test_non_etf_rows() -> None:
+    import random
+
+    from sextant_movers.ranking.listings import parse_directory
+
+    rng = random.Random(20261112)  # noqa: S311 - invented directory texts
+    accepted = 0
+    for index in range(360):
+        file = (NASDAQ, OTHER)[index % 2]
+        rows = [
+            row(
+                file,
+                rng.choice(("ZZAA", "ZZBB", "ZZCC.A", "ZZZZF", "ZZQQW")),
+                **{
+                    "Test Issue": rng.choice(("Y", "N")),
+                    "ETF": rng.choice(("Y", "N")),
+                    "Exchange": rng.choice(("N", "P", "?")),
+                },
+            )
+            for _ in range(rng.randint(1, 5))
+        ]
+        fault = index % 6
+        if fault == 1:
+            rows[0] += "|extra"
+        elif fault == 2:
+            rows[0] = rows[0].rsplit("|", 1)[0]
+        elif fault == 3:
+            rows[0] = row(file, **{"Test Issue": "?"})
+        value = text(file, *rows)
+        if fault == 4:
+            value = "zz-preface\n" + value
+        elif fault == 5:
+            value += "\nFile Creation Time: 1112202612:00|||||||"
+        try:
+            selection = uni.select(value)
+        except ValueError:
+            continue
+        parsed = parse_directory(value)
+        accepted += 1
+        eligible = {r.symbol for r in parsed if not r.test_issue and not r.etf}
+        assert set(selection.symbols) <= eligible, value
+    assert accepted == 120
+
+
+@pytest.mark.parametrize("file", [NASDAQ, OTHER])
+def test_preface_is_accepted_by_parser_but_refused_by_selection(file: str) -> None:
+    from sextant_movers.ranking.listings import parse_directory
+
+    value = "zz-preface\n" + text(file, row(file))
+    assert len(parse_directory(value)) == 1
+    with pytest.raises(
+        ValueError, match="^NASDAQ Trader selection requires an exact directory header$"
+    ):
+        uni.select(value)
+
+
+@pytest.mark.parametrize("file", [NASDAQ, OTHER])
+def test_extra_field_is_accepted_by_parser_but_refused_by_selection(file: str) -> None:
+    from sextant_movers.ranking.listings import parse_directory
+
+    value = text(file, row(file) + "|extra")
+    assert len(parse_directory(value)) == 1
+    with pytest.raises(ValueError, match="^Malformed NASDAQ Trader selection row$"):
+        uni.select(value)
