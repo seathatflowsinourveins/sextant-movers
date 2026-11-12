@@ -542,7 +542,9 @@ def test_foreign_class_with_to_json_is_rebuilt() -> None:
     assert r.generation_key == generation_digest(GEN)
 
 
-@pytest.mark.parametrize("error", [ValueError, KeyError, TypeError, AttributeError, ArithmeticError])
+@pytest.mark.parametrize(
+    "error", [ValueError, KeyError, TypeError, AttributeError, ArithmeticError]
+)
 def test_generation_catches_each_exception_class(error: type[Exception]) -> None:
     class Broken(Copy):
         def to_json(self) -> str:
