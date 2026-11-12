@@ -51,17 +51,20 @@ def test_a_distribution_not_pinned_is_refused() -> None:
 
 
 def test_a_missing_row_is_refused() -> None:
-    with pytest.raises(AssertionError, match=re.escape("UPSTREAMS.md has no single absent row")):
+    refusal = "UPSTREAMS.md has no single absent row for example-org/absent"
+    with pytest.raises(AssertionError, match=re.escape(refusal)):
         upstream_tag(UPSTREAMS, "absent", "example-org/absent")
 
 
 def test_a_row_of_another_repository_is_not_read() -> None:
-    with pytest.raises(AssertionError, match=re.escape("UPSTREAMS.md has no single made_up row")):
+    refusal = "UPSTREAMS.md has no single made_up row for example-org/elsewhere"
+    with pytest.raises(AssertionError, match=re.escape(refusal)):
         upstream_tag(UPSTREAMS, "made_up", "example-org/elsewhere")
 
 
 def test_a_row_twice_is_refused() -> None:
     lines = UPSTREAMS.strip().splitlines()
     twice = "\n".join([*lines, lines[2]]) + "\n"
-    with pytest.raises(AssertionError, match=re.escape("UPSTREAMS.md has no single made_up row")):
+    refusal = "UPSTREAMS.md has no single made_up row for example-org/made_up"
+    with pytest.raises(AssertionError, match=re.escape(refusal)):
         upstream_tag(twice, "made_up", "example-org/made_up")
