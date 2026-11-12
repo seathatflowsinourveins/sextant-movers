@@ -375,7 +375,13 @@ class Beat:
 
 def test_heartbeat_runs_once_after_both_sends_with_full_generation_and_updated_marks() -> None:
     events: list[Any] = []
-    pub = populated(heartbeat=Beat(events))
+
+    class ObservedBeat(Beat):
+        def emit(self, generation: RankingGeneration) -> bool:
+            assert (pub.published_at, pub.sequence) == (NOW, 1)
+            return super().emit(generation)
+
+    pub = populated(heartbeat=ObservedBeat(events))
 
     def send(dt: Any, data: Any) -> None:
         assert pub.published_at is None and pub.sequence == 0
