@@ -1,7 +1,7 @@
 """The Nasdaq Trader symbol directory files: parse, validate and stage them.
 
 `parse_directory` returns every row with its flags and its exchange code; nothing here decides
-which rows are a universe, and the filter that would is not built until it has a source.
+which rows are a universe, and the selection is in `ranking/universe.py`.
 `stage` downloads both files, validates each (the exact header, a field count per row equal to
 the header's, the File Creation Time trailer as the last line) and only then replaces them; a
 truncated download or an HTML page fails a check and the previous files stay. No key is used
