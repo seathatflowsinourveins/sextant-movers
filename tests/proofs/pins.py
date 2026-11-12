@@ -21,5 +21,5 @@ def upstream_tag(upstreams: str, name: str, repository: str) -> str:
     """The tag of the one `UPSTREAMS.md` row that names `name` and `repository`."""
     row = rf"^\| {re.escape(name)} \| {re.escape(repository)} \| (\S+) \| [0-9a-f]{{40}} \|"
     tags = re.findall(row, upstreams, re.MULTILINE)
-    assert len(tags) == 1, f"UPSTREAMS.md has no single {name} row"
+    assert len(tags) == 1, f"UPSTREAMS.md has no single {name} row for {repository}"
     return tags[0]
