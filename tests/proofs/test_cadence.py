@@ -106,7 +106,8 @@ def test_shipped_rows_values_sources_date_measurements_and_hash() -> None:
     assert dict(result.params) == {name: value for name, _, value in EXPECTED}
     assert result.params_hash == SHIPPED_HASH
     with pytest.raises(TypeError):
-        result.params["enabled"] = 0
+        params: Any = result.params
+        params["enabled"] = 0
 
 
 def test_shipped_sources_have_no_private_markers() -> None:
@@ -333,8 +334,9 @@ def test_kept_window_precedes_session_and_usage_checks(tmp_path, monkeypatch) ->
 
     monkeypatch.setattr(policy, "_session", unexpected)
     gate = build(tmp_path)
-    assert gate.floor(at(239), None) is None
-    assert gate.floor(at(1200), None) is None
+    floor: Any = gate.floor
+    assert floor(at(239), None) is None
+    assert floor(at(1200), None) is None
 
 
 def test_kept_session_tuple_and_overnight_flag_unused(tmp_path, monkeypatch) -> None:
