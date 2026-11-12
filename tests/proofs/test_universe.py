@@ -63,6 +63,14 @@ def test_nasdaq_lengths_and_all_fifth_letters() -> None:
     assert set(uni.NASDAQ_SHARE_FIFTH_LETTERS) == set("ABFJKSY")
 
 
+def test_only_a_fifth_letter_is_read_as_a_suffix() -> None:
+    # Up to four letters are a common stock's symbol whatever its last letter is.
+    symbols = ["ZZ" + c for c in string.ascii_uppercase]
+    symbols += ["ZZA" + c for c in string.ascii_uppercase]
+    result = counted(NASDAQ, "selected", *(row(NASDAQ, s) for s in symbols))
+    assert result.symbols == tuple(sorted(symbols))
+
+
 @pytest.mark.parametrize("symbol", ["ZZAAAA", "ZZa", "ZZ1", "ZZ.A", "", "ZZ\N{KELVIN SIGN}"])
 def test_nasdaq_bad_forms(symbol: str) -> None:
     counted(NASDAQ, "symbol_form", row(NASDAQ, symbol))
@@ -186,6 +194,8 @@ def test_blanks_trailer_and_stripped_fields(file: str) -> None:
         " " + HEADERS[NASDAQ],
         "Zz preamble\n" + HEADERS[NASDAQ],
         HEADERS[OTHER].lower(),
+        HEADERS[NASDAQ] + " ",
+        HEADERS[OTHER] + " ",
     ],
 )
 def test_any_other_first_nonempty_line_is_refused(body: str) -> None:
