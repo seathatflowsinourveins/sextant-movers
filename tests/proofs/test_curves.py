@@ -17,12 +17,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from sextant_movers.ranking.curves import SessionCurves, build_curves
 from test_publisher import ASSET, REFS, SCOPE, START, ready, tick
 
 from sextant_movers.ranking import curves
 from sextant_movers.ranking.bars import MINUTE_NS, Bar, nanos
 from sextant_movers.ranking.baseline import NS, BaselineTable, Segment
+from sextant_movers.ranking.curves import SessionCurves, build_curves
 from sextant_movers.ranking.generation import Coverage, CoverageState
 from sextant_movers.sessions import ET
 
@@ -40,17 +40,23 @@ def bar(day: date = DAY, minute: int = 0, *, seg: Segment | None = None, **kw: A
     scope = seg or segment()
     clock = datetime.fromtimestamp(scope.start_ns // NS, ET).timetz()
     start = nanos(datetime.combine(day, clock)) + minute * MINUTE_NS
-    values = dict(symbol=NAMES[0], start_ns=start, open=D(7), close=D("3.25"), volume=8, trades=2)
+    values: dict[str, Any] = dict(
+        symbol=NAMES[0], start_ns=start, open=D(7), close=D("3.25"), volume=8, trades=2
+    )
     return Bar(**(values | kw))
 
 
 def build(sessions: Any = None, **kw: Any) -> SessionCurves:
-    values = dict(symbols=NAMES, segment=segment(), known_at=0, provenance="fixture", feed="sip")
+    values: dict[str, Any] = dict(
+        symbols=NAMES, segment=segment(), known_at=0, provenance="fixture", feed="sip"
+    )
     return build_curves([(DAY, [bar()])] if sessions is None else sessions, **(values | kw))
 
 
 def constructor(**kw: Any) -> SessionCurves:
-    values = dict(segment="PRE", end_s=120, sessions=(DAY,), symbols=(NAMES[0],), known_at=0)
+    values: dict[str, Any] = dict(
+        segment="PRE", end_s=120, sessions=(DAY,), symbols=(NAMES[0],), known_at=0
+    )
     values |= dict(provenance="fixture", dv=(array("q", [0, 10000, 30000]),))
     values |= dict(counts=(array("i", [0, 2, 6]),), data_digest="fixture digest", feed="sip")
     return SessionCurves(**(values | kw))
@@ -278,7 +284,7 @@ def test_array_overflow_is_not_caught(field: str) -> None:
     code = "q" if field == "volume" else "i"
     too_large = 1 << (8 * array(code).itemsize - 1)
     with pytest.raises(OverflowError):
-        build([(DAY, [bar(**{field: too_large})])])
+        build([(DAY, [bar(volume=too_large) if field == "volume" else bar(trades=too_large)])])
 
 
 def test_duplicate_bar_is_summed_twice() -> None:
@@ -292,7 +298,7 @@ def test_early_close_prior_post_uses_current_clock_and_keeps_1600_to_2000() -> N
     prior = date(2026, 11, 27)  # XNYS early close at 13:00 on this calendar date.
     items = [bar(prior, m, seg=scope) for m in (-180, -1, 0, 239, 240)]
     curve = build([(prior, items)], segment=scope)
-    assert curve.dv[0][1] == 260000 and curve.dv[0][-1] == 520000
+    assert curve.dv[0][1] == 260000 and curve.dv[0][curve.points - 1] == 520000
     assert curves._session_start(prior, scope) == nanos(datetime(2026, 11, 27, 16, tzinfo=ET))
 
 
@@ -324,9 +330,9 @@ def test_publisher_accepts_curves_and_source_reason_carries_their_identity() -> 
     pub.set_coverage(Coverage(CoverageState.READY, True, 3, 3, 0, 0, 0))
     generation = pub.publish(now=START + 360 * NS + 100)
     assert generation is not None and generation.rows
-    source = next(r for r in generation.reasons if r.code == "SOURCE")
-    assert source.details["baseline_hash"] == baseline.identity
-    assert source.details["baseline_source"] == baseline.provenance
+    source = next(r for r in generation.rows[0].reasons if r.code == "SOURCE")
+    assert json.loads(source.detail or "null")["baseline_hash"] == baseline.identity
+    assert json.loads(source.detail or "null")["baseline_source"] == baseline.provenance
 
 
 def test_zero_baseline_keeps_engine_ratio_unavailable() -> None:
@@ -338,7 +344,7 @@ def test_zero_baseline_keeps_engine_ratio_unavailable() -> None:
     pub.on_trade(tick(60, name=names[0]))
     row = pub.states[names[0]].latest
     assert row is not None and row.dvol_ratio is None
-    assert row.observations["baseline_zero_dollar_volume"] is True
+    assert "baseline_zero_dollar_volume" in row.observations["unknown_reasons"]
 
 
 def test_module_has_no_feed_literal_session_count_or_forbidden_import() -> None:
