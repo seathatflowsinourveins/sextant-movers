@@ -4,7 +4,8 @@ A row has a name, unit, value, source, calibration state and last change (MANIFE
 "Registry rows for tunable values"; AGENTS.md Rule 2). `Registry` builds only from all twelve
 display rows, each a sourced UNCALIBRATED row with a set, positive, finite value of its kind:
 an UNAVAILABLE or missing row means there is no registry, and a calibrated row is refused until
-this repository has a calibration record format. Nothing here holds a value or reads a file.
+this repository has a calibration record format. Values live in package data; `load_registry`
+reads only the caller-named file.
 
 Source: the reference's `src/sextant/ranking/registry.py` at
 `06562bec0898a7203f4eaf69086ced83d2477e6b` (`RegistryRow`, `ROWS`, `Registry`), whose
@@ -19,6 +20,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,3 +114,36 @@ class Registry:
 
     def seconds(self, name: str) -> int:
         return int(getattr(self, name)) * 1_000_000_000
+
+
+def load_registry(path: Path) -> Registry:
+    """Read the operational K2 registry file into the validated registry."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if raw.get("schema") != "k2-ranking.registry/1":
+        raise ValueError("not a K2 ranking registry")
+    rows = []
+    for item in raw.get("rows") or ():
+        name, unit = item.get("name"), item.get("unit")
+        kind = ROWS.get(name)
+        if kind is None or kind[1] != unit:
+            raise ValueError(f"unknown registry row: {name}")
+        raw_value = item["value"]
+        if kind[0] is int:
+            if type(raw_value) is not int:
+                raise ValueError(f"invalid registry value: {name}")
+            value = raw_value
+        else:
+            if type(raw_value) not in (int, str):
+                raise ValueError(f"invalid registry value: {name}")
+            value = Decimal(raw_value)
+        rows.append(
+            RegistryRow(
+                name,
+                unit,
+                value,
+                item["source"],
+                item["calibration_state"],
+                date.fromisoformat(item["last_change"]),
+            )
+        )
+    return Registry(tuple(rows))

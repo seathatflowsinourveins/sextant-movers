@@ -15,7 +15,7 @@ import random
 import re
 import sys
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,8 @@ FAULTS = (
     ("missing_calibration_state", KeyError, "calibration_state"),
     ("missing_last_change", KeyError, "last_change"),
     ("date", ValueError, "Invalid isoformat string"),
+    ("date_type", TypeError, "argument must be str"),
+    ("decimal_text", InvalidOperation, "ConversionSyntax"),
     ("missing_rows", ValueError, "registry rows refused: missing"),
     ("null_rows", ValueError, "registry rows refused: missing"),
     ("duplicate", ValueError, "registry rows refused: duplicate"),
@@ -150,8 +152,10 @@ def file_text(raw: dict[str, Any], fault: str) -> str:
         raw["rows"][0][fault] = "made_up"
     elif fault == "date":
         raw["rows"][0]["last_change"] = "made-up-date"
+    elif fault == "date_type":
+        raw["rows"][0]["last_change"] = None
     elif fault.startswith(("int_", "decimal_")):
-        values = {"string": "7", "bool": True, "float": 7.5, "list": [7], "int": 7}
+        values = {"string": "7", "bool": True, "float": 7.5, "list": [7], "int": 7, "text": "bad"}
         family, kind = fault.split("_")
         raw["rows"][-1 if family == "int" else 0]["value"] = values[kind]
     return json.dumps(raw, ensure_ascii=False)
@@ -230,7 +234,7 @@ def outcomes(tmp_path: Path, cases: list[str]) -> list[list[str]]:
 def test_seeded_outcomes_digest(tmp_path: Path) -> None:
     results = outcomes(tmp_path, seeded_files())
     digest = hashlib.sha256(json.dumps(results, separators=(",", ":")).encode()).hexdigest()
-    assert digest == "7a4951c132ee43bd6fa87e672c082941d2321b2fc55da87ddfb3765e6eb040a7"
+    assert digest == "18b8b16ad6148427cc68d23c286b4484f6e705de022cc2c09dd4dad6c51a19e8"
 
 
 CHILD = """
