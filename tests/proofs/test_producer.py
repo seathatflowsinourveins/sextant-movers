@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 from alpaca.data.enums import DataFeed
 from nautilus_trader.model import TradeTick
-from sextant_movers.tradingview.producer import Clocks, LiveProducer
 from test_publisher import NAMES, NS, registry, tick
 from test_reader import NOW, REG, SEG, feature_change, filled, row_change
 
@@ -22,6 +21,7 @@ from sextant_movers.lease import AccountScope, WriterLease
 from sextant_movers.ranking.generation import Coverage, CoverageState, generation_digest
 from sextant_movers.tradingview import producer as module
 from sextant_movers.tradingview.inputs import REFUSED_PREFIXES
+from sextant_movers.tradingview.producer import Clocks, LiveProducer
 
 SCOPE = AccountScope("zz-broker", "zz-scope")
 SLOT = 17
@@ -188,7 +188,7 @@ def test_watchlist_bound_inclusive_and_registered(factory):
         line for line in manifest.splitlines() if line.startswith("| `MAX_WATCHLIST_SYMBOLS` |")
     )
     assert "| symbols | 1000 |" in row and "UNCALIBRATED" in row and "2026-11-11" in row
-    assert "www.tradingview.com" in row and "producer.py:83" in row
+    assert "www.tradingview.com" in row and "producer.py:76" in row
 
 
 def test_trade_rebuilt_with_market_init_and_exact_provenance(factory, monkeypatch):
@@ -223,7 +223,6 @@ def test_trade_rebuilt_with_market_init_and_exact_provenance(factory, monkeypatc
     )
     assert facts == {
         "known_at": clocks.MARKET_AVAILABLE_AT,
-        "conditions": (),
         "price_eligible": True,
         "volume_eligible": True,
     }
@@ -237,7 +236,7 @@ def test_condition_code_does_not_override_caller_eligibility(factory, monkeypatc
     live, seen = factory(), []
     monkeypatch.setattr(live.publisher, "on_trade", lambda view, **facts: seen.append(facts))
     assert observe(live, conditions=("G",))
-    assert seen[0]["conditions"] == ("G",)
+    assert set(seen[0]) == {"known_at", "price_eligible", "volume_eligible"}
     assert seen[0]["price_eligible"] is seen[0]["volume_eligible"] is True
 
 
@@ -462,7 +461,7 @@ def test_fresh_document_key_by_key_and_captured_unit_stable(factory):
     "case,reason",
     [
         ("no_heartbeat", "heartbeat_missing"),
-        ("invalid_heartbeat", "heartbeat_invalid"),
+        ("invalid_heartbeat", "heartbeat_missing"),
         ("coverage", "generation incomplete"),
         ("future_mapping", "mapping unavailable"),
         ("mapping_after_generation", "expired generation or future mapping"),
@@ -556,7 +555,7 @@ def test_each_projected_feature_refusal(factory, name, damage):
 )
 def test_each_selected_mapping_refusal_makes_whole_unit_unavailable(factory, case):
     live = factory()
-    mapping = dict(MEMBERS)
+    mapping: dict[str, Any] = dict(MEMBERS)
     if case == "empty":
         mapping = {}
     elif case == "missing":
@@ -582,7 +581,6 @@ def test_unselected_refused_prefix_ignored_and_short_selection_accepted(factory)
     outside = next(s for s, qualified in MEMBERS.items() if qualified not in selected)
     mapping = MEMBERS | {outside: sorted(REFUSED_PREFIXES)[0] + ":" + outside}
     assert unit(live, symbol_map=mapping)["status"] == "fresh"
-    live.publisher.registry = registry(top_n=100)
     # Independently inspect a fresh producer; no registry mutation is needed in production.
     live.lease.close()
     shorter = factory(reg=registry(top_n=100))
@@ -691,3 +689,31 @@ def test_source_boundaries_no_clients_requests_condition_scope_or_slot_literals(
     assert constants.count("sip") == 1 and 2 not in constants
     assert not hasattr(module, "SCOPE")
     assert not hasattr(module, "snapshot_request") and not hasattr(module, "snapshot_pacer")
+
+
+@pytest.mark.parametrize("price,volume", [(True, False), (False, True), (False, False)])
+def test_publisher_receives_only_clock_and_caller_eligibility(factory, monkeypatch, price, volume):
+    live, seen = factory(), []
+    monkeypatch.setattr(live.publisher, "on_trade", lambda view, **facts: seen.append(facts))
+    raw = tick(361, name=NAMES[0])
+    assert observe(
+        live, tick=raw, conditions=("ZZCOND",), price_eligible=price, volume_eligible=volume
+    )
+    assert seen == [{"known_at": raw.ts_event, "price_eligible": price, "volume_eligible": volume}]
+
+
+@pytest.mark.parametrize(
+    "reason", ["heartbeat_stale", "generation_missing", "generation_stale", "input_stale"]
+)
+def test_reader_unavailability_reason_survives_projection(factory, monkeypatch, reason):
+    live = factory()
+    fresh(live)
+    monkeypatch.setattr(live.publisher, "publish", lambda **kw: None)
+    if reason == "heartbeat_stale":
+        live.reader._heartbeat = (NOW - 3 * NS, NOW - 3 * NS)
+    elif reason == "generation_missing":
+        live.reader.invalidate(reason)
+    else:
+        field = "known_at" if reason == "generation_stale" else "ts_event"
+        live.reader.generation = replace(live.reader.generation, **{field: NOW - 3 * NS})
+    assert unit(live)["reason"] == reason
