@@ -742,3 +742,349 @@ def test_no_tick_lock_shared_pointer_has_no_concurrency_guard():
     source = inspect.getsource(module)
     assert not any(token in source for token in ("flock", "Lock(", "acquire(", "uuid", "mktemp"))
     assert 'f".{unit_dir.name}.pointer"' in source
+
+
+def service_inputs():
+    """Seeded tapes: every fetch spans at least thirty complete minutes."""
+    import random
+
+    from test_host import host_inputs
+
+    template = host_inputs()
+    rng = random.Random(6101)  # noqa: S311 - deterministic synthetic tapes
+    runs = []
+    kinds = [
+        "complete",
+        "missing",
+        "zero",
+        "outside",
+        "unknown",
+        "repeat",
+        "revision",
+        "late",
+        "boundary",
+        "stale",
+        "backwards",
+        "closed",
+    ]
+    for index in range(6):
+        segment = ("PRE", "RTH", "POST")[index % 3]
+        start = START + (0, 330, 720)[index % 3] * MINUTE_NS
+        steps = []
+        for step, kind in enumerate(kinds):
+            minutes = 32 + step
+            bars = []
+            for minute in range(minutes):
+                for i, name in enumerate(NAMES):
+                    # A complete poll verifies this missing bar without creating a gap.
+                    if minute == 3 and i == 1:
+                        continue
+                    if kind == "stale" and i == 2 and minute >= minutes - 3:
+                        continue
+                    bars.append(
+                        dict(
+                            symbol=name,
+                            start_ns=start + minute * MINUTE_NS,
+                            open="1.90",
+                            close=str(D(2) + D(minute) / 100 + D(i) / 1000),
+                            volume=0 if minute == 4 and i == 0 else rng.randint(1, 30),
+                            trades=rng.randint(0, 7),
+                        )
+                    )
+            # Retained filters and identical duplicates occur alongside ordinary minutes.
+            bars.extend(
+                [
+                    dict(bars[0], start_ns=start - MINUTE_NS),
+                    dict(bars[0], start_ns=start + 60 * MINUTE_NS),
+                    dict(bars[-1], start_ns=start + minutes * MINUTE_NS),
+                    dict(bars[2]),
+                ]
+            )
+            if kind == "unknown":
+                bars.append(dict(bars[0], symbol="ZZUNASKED"))
+            elif kind == "revision":
+                bars.append(dict(bars[0], close="4.10"))
+            elif kind == "missing":
+                bars = [
+                    b
+                    for b in bars
+                    if not (b["symbol"] == NAME and b["start_ns"] == start + 7 * MINUTE_NS)
+                ]
+            elif kind == "zero":
+                bars = [
+                    dict(b, volume=0)
+                    if b["symbol"] == OTHER and b["start_ns"] == start + 9 * MINUTE_NS
+                    else b
+                    for b in bars
+                ]
+            rng.shuffle(bars)
+            now = start + minutes * MINUTE_NS
+            publication = None
+            if kind == "late":
+                publication = now + 3 * NS
+            elif kind == "backwards":
+                publication = now - 1
+            elif kind == "closed":
+                publication = start + 60 * MINUTE_NS
+            elif kind != "boundary":
+                now += rng.choice((0, 1, 123))
+            steps.append(dict(kind=kind, bars=bars, now=now, publication=publication))
+        runs.append(
+            dict(
+                segment=[
+                    segment,
+                    str(ready().segment.session_date),
+                    start,
+                    start + 60 * MINUTE_NS,
+                    "zz-segment",
+                ],
+                steps=steps,
+            )
+        )
+    return {k: template[k] for k in ("registry", "method_version", "scope", "paper_slot")} | {
+        "symbols": list(NAMES),
+        "runs": runs,
+    }
+
+
+def service_replay(m, inputs, root, facts):
+    """Common driver, executed natively on each side; compare every visible answer."""
+    from datetime import date
+    from decimal import Decimal
+    from pathlib import Path
+
+    rows = tuple(
+        m["RegistryRow"](n, u, Decimal(v) if dec else int(v), src, state, date.fromisoformat(day))
+        for n, u, v, src, state, day, dec in inputs["registry"]
+    )
+    answers = []
+    for index, run in enumerate(inputs["runs"]):
+        name, day, start, end, provenance = run["segment"]
+        segment = m["Segment"](name, date.fromisoformat(day), start, end, provenance)
+        samples = tuple(
+            m["BaselineSample"](s, name, "2030-11-27", off, Decimal(dv), Decimal(tc))
+            for s in inputs["symbols"]
+            for off, dv, tc in ((0, "0", "0"), (3600, "3000", "600"))
+        )
+        baseline = m["BaselineTable"](samples, "zz-curves", start - 1, "sip")
+        scope = m["scope"](*inputs["scope"])
+        directory = Path(root) / str(index)
+        lease = m["WriterLease"](scope, directory / "lease", "zz-service-seeded")
+        lease.acquire()
+        try:
+            for step in run["steps"]:
+                bars = tuple(
+                    m["Bar"](
+                        symbol=b["symbol"],
+                        start_ns=b["start_ns"],
+                        open=Decimal(b["open"]),
+                        close=Decimal(b["close"]),
+                        volume=b["volume"],
+                        trades=b["trades"],
+                    )
+                    for b in step["bars"]
+                )
+
+                class Source:
+                    def __init__(self, bars):
+                        self.bars = bars
+
+                    def minute_bars(self, symbols, *, start, end):
+                        assert symbols == tuple(inputs["symbols"])
+                        return self.bars
+
+                unit, j5 = directory / "unit", directory / "j5.json"
+                kw: dict = dict(
+                    lease=lease,
+                    source=Source(bars),
+                    segment=segment,
+                    baseline=baseline,
+                    symbols=tuple(inputs["symbols"]),
+                    prior_closes=dict.fromkeys(inputs["symbols"], Decimal(2)),
+                    prior_close_ns=start - 1,
+                    symbol_map={s: "ZZX:" + s for s in inputs["symbols"]},
+                    registry=m["Registry"](rows),
+                    epoch=f"zz-service-{index}",
+                    universe_source="zz-universe",
+                    now_ns=step["now"],
+                    unit_dir=unit,
+                    j5_path=j5,
+                    bounds=m["DisplayBounds"](Decimal("0.1"), Decimal(2), 1200),
+                    feed=facts["feed"],
+                    max_age=facts["max_age"],
+                )
+                if step["publication"] is not None:
+                    at = step["publication"]
+                    kw["clock"] = lambda at=at: at
+                try:
+                    receipt = m["tick"](kw, scope, inputs, facts)
+                    receipt.pop("unit_dir")
+                    result = receipt
+                except Exception as exc:
+                    kind = type(exc).__name__
+                    result = ["PrestageError" if kind == "ServiceError" else kind, str(exc)]
+                files = (
+                    {p.name: p.read_text() for p in sorted(unit.iterdir())} if unit.exists() else {}
+                )
+                answers.append(
+                    [
+                        result,
+                        files,
+                        j5.read_text() if j5.exists() else None,
+                        unit.resolve().name if unit.is_symlink() else None,
+                    ]
+                )
+        finally:
+            lease.close()
+    return answers
+
+
+def service_answers(inputs, tmp_path, facts):
+    from sextant_movers.ranking.baseline import BaselineSample, BaselineTable, Segment
+    from sextant_movers.ranking.registry import Registry, RegistryRow
+
+    def native(kw, scope, inputs, facts):
+        return module.publish_tick(
+            **kw,
+            scope=scope,
+            paper_slot=inputs["paper_slot"],
+            send=Send(),
+            method_version=inputs["method_version"],
+            eligible_security_types=frozenset(facts["eligible_security_types"]),
+            price_band_edges=tuple(facts["price_band_edges"]),
+            **{
+                k: facts[k]
+                for k in ("sip_authority", "mapping_source", "reference_source", "asset_source")
+            },
+        )
+
+    m = dict(
+        Registry=Registry,
+        RegistryRow=RegistryRow,
+        Segment=Segment,
+        BaselineSample=BaselineSample,
+        BaselineTable=BaselineTable,
+        scope=type(SCOPE),
+        WriterLease=WriterLease,
+        Bar=type(bar()),
+        DisplayBounds=DisplayBounds,
+        tick=native,
+    )
+    return service_replay(m, inputs, tmp_path, facts)
+
+
+def service_counts(answers) -> dict:
+    from collections import Counter
+
+    errors = Counter(a[0][0] + ": " + a[0][1] for a in answers if isinstance(a[0], list))
+    return dict(
+        ticks=len(answers),
+        published=sum(isinstance(a[0], dict) for a in answers),
+        refused=sum(errors.values()),
+        exceptions=dict(sorted(errors.items())),
+    )
+
+
+SERVICE_DIGEST = "71d6b2764f0c24bed3d891443b9ab623b23672fa813fe10fe2e60f416ad68072"
+
+
+def test_seeded_service_answers_are_pinned(tmp_path):
+    inputs = service_inputs()
+    assert {r["segment"][0] for r in inputs["runs"]} == {"PRE", "RTH", "POST"}
+    assert sum(len(r["steps"]) for r in inputs["runs"]) >= 60
+    assert all(
+        len({b["start_ns"] for b in s["bars"]}) >= 30 for r in inputs["runs"] for s in r["steps"]
+    )
+    facts = dict(
+        sip_authority=AUTH,
+        mapping_source="zz-mapping",
+        reference_source="zz-reference",
+        asset_source="zz-asset",
+        feed="sip",
+        max_age=1200,
+        eligible_security_types=sorted(TYPES),
+        price_band_edges=list(EDGES),
+    )
+    answers = service_answers(inputs, tmp_path, facts)
+    counts = service_counts(answers)
+    assert counts["published"] > 0 and counts["refused"] > 0
+    assert len({a[3] for a in answers if isinstance(a[0], dict)}) > len(inputs["runs"])
+    digest = hashlib.sha256(json.dumps(answers, sort_keys=True, separators=(",", ":")).encode())
+    print(f"service answers: {counts}, digest {digest.hexdigest()}")
+    assert digest.hexdigest() == SERVICE_DIGEST
+
+
+SERVICE_PARITY = r"""
+import ast, hashlib, inspect, json, os, sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+src = os.environ["MOVERS_REFERENCE_SRC"]
+blobs = {
+    "tradingview/prestage.py": "e3345d330725a4ad12d6e517ae74c592d3633ffe",
+    "tradingview/host.py": "334748530508928f7d9bdcd173dce4144f2b7450",
+    "tradingview/bridge.py": "29f8c37cd021082ae43f1d5c70c834456b6c0a8c",
+    "tradingview/inputs.py": "83bb85dfb9e2833430b6d95b010dced8f6e47a49",
+    "tradingview/producer.py": "02d58845621c786a1ee706e45f6cf7842cffd43a",
+    "tradingview/bars.py": "8ae03acec28cabae0425cf6af1bce38b08910e60",
+    "ranking/publisher.py": "498ac186d643a137b32f6ff84f9ca76c657fb0ee",
+}
+for path, expected in blobs.items():
+    blob = (Path(src) / "sextant" / path).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected, path
+sys.path.insert(0, src)
+import nautilus_trader
+from sextant.tradingview import prestage as p, producer as pr, bridge as br
+from sextant.ranking import baseline as bl, engine as en, publisher as pb, registry as rg
+from sextant.ranking import reader as rd
+from sextant.execution import custody as cu
+inputs = json.loads(sys.stdin.read())
+versions = [list(sys.version_info[:3]), nautilus_trader.__version__]
+assert versions == inputs.pop("versions"), "Python/engine version mismatch"
+pb.METHOD = rd.METHOD = br.METHOD = inputs["method_version"]
+pr.SCOPE = cu.AccountScope(*inputs["scope"])
+pr.DISPLAY_PAPER_SLOT = br.DISPLAY_PAPER_SLOT = inputs["paper_slot"]
+tree = ast.parse(inspect.getsource(pb))
+asset = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AssetState")
+types = next(ast.literal_eval(n) for n in ast.walk(asset) if isinstance(n, ast.Set))
+edges = sorted({n.comparators[0].value for n in ast.walk(tree)
+                if isinstance(n, ast.Compare) and isinstance(n.left, ast.Name)
+                and n.left.id == "price" and isinstance(n.ops[0], ast.GtE)
+                and isinstance(n.comparators[0], ast.Constant)})
+assert len(edges) == 2
+sig = inspect.signature(p.publish_tick)
+facts = dict(sip_authority=p.SIP_AUTHORITY, mapping_source=p.MAPPING_SOURCE,
+             reference_source=p.REFERENCE_SOURCE, asset_source=p.ASSET_SOURCE,
+             feed=sig.parameters["feed"].default, max_age=sig.parameters["max_age"].default,
+             eligible_security_types=sorted(types), price_band_edges=edges)
+def native(kw, scope, inputs, facts):
+    return p.publish_tick(**kw)
+m = dict(Registry=rg.Registry, RegistryRow=rg.RegistryRow, Segment=en.Segment,
+         BaselineSample=bl.BaselineSample, BaselineTable=bl.BaselineTable,
+         scope=cu.AccountScope, WriterLease=cu.WriterLease, Bar=p.Bar,
+         DisplayBounds=p.DisplayBounds, tick=native)
+with TemporaryDirectory() as root:
+    answers = service_replay(m, inputs, root, facts)
+print("PARITY " + json.dumps(dict(facts=facts, versions=versions, answers=answers)))
+"""
+
+
+@pytest.mark.local
+def test_service_parity_with_reference_child(tmp_path):
+    import sys
+
+    import nautilus_trader
+    import reference_child as child
+
+    src, python = child.reference()
+    inputs = service_inputs()
+    versions = [list(sys.version_info[:3]), nautilus_trader.__version__]
+    script = inspect.getsource(service_replay) + SERVICE_PARITY
+    theirs = child.run(python, src, script, stdin=json.dumps(inputs | {"versions": versions}))
+    assert versions == theirs["versions"], "Python/engine version mismatch"
+    # Reference input facts stay in memory and pytest's temporary output, never source text.
+    ours = service_answers(inputs, tmp_path, theirs["facts"])
+    print(f"\npython, engine: here {versions}, reference {theirs['versions']}")
+    print(f"service parity: {service_counts(ours)}")
+    assert len(ours) == len(theirs["answers"])
+    for index, (left, right) in enumerate(zip(ours, theirs["answers"], strict=True)):
+        assert left == right, f"tick {index}: receipt/error, display files, J5 or pointer differs"
