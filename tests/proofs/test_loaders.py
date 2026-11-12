@@ -386,6 +386,24 @@ def test_maps_missing_directory_is_file_not_found(tmp_path) -> None:
         loaders.load_maps(n, o, m)
 
 
+def test_maps_route_outside_the_directory_is_left_out_and_not_counted(tmp_path) -> None:
+    n, o, m = directories(tmp_path)
+    routes = json.loads(m.read_text(encoding="utf-8"))
+    m.write_text(json.dumps({**routes, "ZZXX": "NYSE:ZZXX"}), encoding="utf-8")
+    universe, mapped, provenance = loaders.load_maps(n, o, m)
+    assert universe == ("ZZCC", "ZZDD.A")
+    assert mapped == {"ZZCC": "NASDAQ:ZZCC", "ZZDD.A": "NYSE:ZZDD.A"}
+    assert provenance.endswith("; 2 of 4 directory symbols mapped, 2 unmapped omitted")
+
+
+@pytest.mark.parametrize("index,unit", [(0, "ratio"), (1, "seconds"), (2, "fraction")])
+def test_bounds_unit_of_another_row_is_refused(tmp_path, index, unit) -> None:
+    doc = bounds()
+    doc["rows"][index]["unit"] = unit
+    path = write(tmp_path, doc)
+    assert_refused(loaders.load_display_bounds, path, bounds_refusal(path))
+
+
 def test_departures_required_paths_no_module_path_defaults_and_no_network_or_writes() -> None:
     for call in (loaders.load_request_budget, loaders.load_display_bounds):
         assert inspect.signature(call).parameters["path"].default is inspect.Parameter.empty
