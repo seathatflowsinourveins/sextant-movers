@@ -411,3 +411,101 @@ def test_source_has_only_display_imports_and_delegates_all_file_writing() -> Non
                     }
         if path.name == "__init__.py":
             assert len(tree.body) == 1 and isinstance(tree.body[0], ast.Expr)
+
+
+def seeded_generations() -> list[str]:
+    import nautilus_trader.model as nt
+    from test_publish import publication_side, publish_answers
+
+    runs = publish_answers(publication_side(), nt)["runs"]
+    return [
+        step[1][1]
+        for run in runs
+        for step in run
+        if step[1] is not None and step[1][0] == "generation"
+    ]
+
+
+def page_answers(m: Any, generations: list[str]) -> list[list[str]]:
+    """Same caller values on each side; compare every document's JSON and HTML string."""
+    answers = []
+    for source in generations:
+        gen = m.RankingGeneration.from_json(source)
+        for top_n in (1, 3):
+            projection = m.generation_view(
+                gen, segment="PRE", top_n=top_n, universe_source="zz-seeded-universe"
+            )
+            for refresh_s in (None, 2):
+                for age, reason in ((0, None), (6, None), (1, "zz-seeded-refusal")):
+                    at = gen.known_at + age * 1_000_000_000
+                    doc = m.view_document(
+                        projection,
+                        reason=reason,
+                        max_age_s=5,
+                        refresh_s=refresh_s,
+                        written_at_ns=at,
+                    )
+                    answers.append([json.dumps(doc, sort_keys=True), m.render_html(doc, now_ns=at)])
+    return answers
+
+
+PAGE_DIGEST = "d61a5fad3bcc8b1ccefb0f8eba0287beddf955efa17918d47c358aa39f72c498"
+
+
+def test_seeded_page_answers_are_pinned() -> None:
+    import hashlib
+
+    sources = seeded_generations()
+    states = [json.loads(source)["coverage"]["state"] for source in sources]
+    assert "READY" in states and any(state != "READY" for state in states)
+    answers = page_answers(view, sources)
+    assert len(answers) == len(sources) * 12 and len(answers) >= 300
+    payload = json.dumps(answers, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(payload.encode()).hexdigest() == PAGE_DIGEST
+
+
+PAGE_PARITY = """
+import hashlib, os, sys
+src = os.environ["MOVERS_REFERENCE_SRC"]
+path = os.path.join(src, "sextant", "tradingview", "ranked_view.py")
+with open(path, "rb") as handle:
+    blob = handle.read()
+expected_blob = "a589c4d9f70983e59daab1e8872b067a41ee82df"
+assert hashlib.sha1(b"blob %d\\0" % len(blob) + blob).hexdigest() == expected_blob
+sys.path.insert(0, src)
+from sextant.tradingview import ranked_view as view
+assert os.path.samefile(view.__file__, path)
+print("PARITY " + json.dumps({
+    "versions": list(sys.version_info[:3]),
+    "answers": page_answers(view, json.loads(sys.stdin.read())),
+}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_page_parity_with_the_reference_in_a_child_interpreter() -> None:
+    import inspect
+    import sys
+
+    import reference_child as child
+
+    src, python = child.reference()
+    sources = seeded_generations()
+    script = "import json\nfrom typing import Any\n" + inspect.getsource(page_answers) + PAGE_PARITY
+    theirs = child.run(python, src, script, stdin=json.dumps(sources))
+    here = list(sys.version_info[:3])
+    assert here == theirs["versions"], (
+        f"version mismatch: here {here}, reference {theirs['versions']}"
+    )
+    ours = page_answers(view, sources)
+    assert len(ours) == len(theirs["answers"])
+    for index, (actual, expected) in enumerate(zip(ours, theirs["answers"], strict=True)):
+        assert actual[0] == expected[0], f"document JSON differs at {index}"
+        assert actual[1] == expected[1], f"HTML string differs at {index}"
+    ready = sum(json.loads(source)["coverage"]["state"] == "READY" for source in sources)
+    print(f"\nPython: here {here}, reference {theirs['versions']}")
+    print(
+        f"page parity: {len(sources)} generations "
+        f"({ready} ready, {len(sources) - ready} not ready)"
+    )
+    print(f"page parity: {len(ours)} documents, sorted JSON and HTML equal per document")
