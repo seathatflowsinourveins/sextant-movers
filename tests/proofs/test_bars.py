@@ -383,7 +383,7 @@ def test_the_module_imports_the_sdk_data_names_and_the_window_only() -> None:
     assert outside <= sdk | {"sextant_movers.ranking.window"}
     assert "sextant_movers.ranking.window" in outside
     text = Path(m.__file__).read_text()
-    for word in ("environ", "getenv", "MAX_BATCH", "BarPoll", "AlpacaHistory", "credentials"):
+    for word in ("environ", "getenv", "MAX_BATCH", "AlpacaHistory", "credentials"):
         assert word not in text
     for word in ("universe", "Listing"):
         assert word not in text
@@ -596,3 +596,40 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
         f"alpaca-py {theirs['sdk']}"
     )
     assert theirs["answers"] == ours
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"bars": []},
+        {"bars": (object(),)},
+        {"requested": []},
+        {"requested": ("",)},
+        {"requested": (7,)},
+        {"failed": []},
+        {"failed": ("",)},
+        {"failed": (7,)},
+        {"requested": ("ZZPOLL", "ZZPOLL")},
+        {"failed": ("ZZOTHER",)},
+    ],
+)
+def test_bar_poll_refusals_alone(over: Any) -> None:
+    from sextant_movers.ranking.bars import BarPoll
+
+    with pytest.raises(ValueError):
+        BarPoll(**({"bars": (), "requested": ("ZZPOLL",)} | over))
+
+
+def test_bar_poll_keeps_records_default_failures_and_reference_loose_membership() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from sextant_movers.ranking.bars import BarPoll
+
+    item = Bar("ZZOTHER", 0, D(3), D(4), 7, 2)
+    poll = BarPoll((item,), ("ZZPOLL",))
+    assert poll.bars == (item,) and poll.requested == ("ZZPOLL",) and poll.failed == ()
+    # Kept: duplicate failed names and bars outside requested names are accepted.
+    assert BarPoll((item,), ("ZZPOLL",), ("ZZPOLL",) * 2).failed == ("ZZPOLL",) * 2
+    with pytest.raises(FrozenInstanceError):
+        poll.failed = ()  # type: ignore[misc]
+    assert not hasattr(poll, "__dict__")
