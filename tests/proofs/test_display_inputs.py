@@ -15,7 +15,7 @@ import pytest
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from pandas import Timestamp
 
-from sextant_movers.sessions import ET
+from sextant_movers.sessions import ET, OVERNIGHT_START
 from sextant_movers.tradingview import inputs as reader
 
 FILES = ("top100.json", "focus.json", "display-lists.json")
@@ -670,7 +670,10 @@ def seeded_units() -> list[dict[str, Any]]:
             ]
         )
         at = datetime.fromisoformat(clock)
-        day = at.astimezone(ET).date().isoformat()
+        local = at.astimezone(ET)
+        day = (
+            local.date() + timedelta(days=1) if local.time() >= OVERNIGHT_START else local.date()
+        ).isoformat()
         rows = [member(i) for i in range(rng.randint(1, 12))]
         focus = rows[: rng.randint(0, len(rows))]
         docs = documents(
@@ -790,7 +793,7 @@ def clock_answers(m: Any) -> list[int]:
     ]
 
 
-UNIT_DIGEST = "be527bd1f2c610c2f6e234137b09f3f6ff6c01233bf129682537f88fcf3f41bf"
+UNIT_DIGEST = "e25baa71e9b2b24ea095088c76979910eccc00f5e0ecfc88f35076a50586b59d"
 
 
 def test_seeded_unit_answers_are_pinned() -> None:
@@ -802,6 +805,17 @@ def test_seeded_unit_answers_are_pinned() -> None:
     assert {answer[0] for answer in answers} == {"accepted", "refused"}
     payload = json.dumps([answers, clock_answers(reader)], sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(payload.encode()).hexdigest() == UNIT_DIGEST
+
+
+def test_seeded_overnight_units_are_accepted_and_refused() -> None:
+    units = [
+        unit
+        for unit in seeded_units()
+        if datetime.fromisoformat(unit["nows"][0]).astimezone(ET).time() >= OVERNIGHT_START
+    ]
+    assert units
+    answers = unit_answers(reader, units)
+    assert {answer[0] for answer in answers} == {"accepted", "refused"}
 
 
 UNIT_PARITY = """
