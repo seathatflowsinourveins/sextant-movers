@@ -12,7 +12,8 @@ historical calls a minute on Basic, 10,000 on Algo Trader Plus. Alpaca, "Histori
 2026-11-11: `symbols` is a comma-separated list with no stated maximum. The behaviour is the
 reference's `src/sextant/tradingview/bars.py` and `src/sextant/data/alpaca_history.py` at
 `06562bec0898a7203f4eaf69086ced83d2477e6b`, except that the rate, the batch and the feed are the
-caller's, with no default, and a batch has no upper bound.
+caller's, with no default, and a batch has no upper bound. BarPoll records one poll,
+value for value from the reference's `src/sextant/tradingview/bars.py:88-108`.
 
 Every wire request, each page and each retry, waits on the one pacer, because both paths go
 through `_one_request`. Nothing here places an order or reads an account.
@@ -90,6 +91,28 @@ class Bar:
     @property
     def close_ns(self) -> int:
         return self.start_ns + MINUTE_NS
+
+
+@dataclass(frozen=True, slots=True)
+class BarPoll:
+    """One complete poll: what came back and what failed."""
+
+    bars: tuple[Bar, ...]
+    requested: tuple[str, ...]
+    failed: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bars, tuple) or any(not isinstance(item, Bar) for item in self.bars):
+            raise ValueError("A poll carries Bars")
+        for names in (self.requested, self.failed):
+            if not isinstance(names, tuple) or any(
+                not isinstance(name, str) or not name for name in names
+            ):
+                raise ValueError("A poll carries symbol names")
+        if len(set(self.requested)) != len(self.requested):
+            raise ValueError("A poll requests each symbol once")
+        if not set(self.failed) <= set(self.requested):
+            raise ValueError("A failed symbol must have been requested")
 
 
 def _bar(symbol: str, row: AlpacaBar) -> Bar:
