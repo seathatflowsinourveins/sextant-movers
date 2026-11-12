@@ -18,6 +18,7 @@ from test_publisher import NAMES, NS, registry, tick
 from test_reader import NOW, REG, SEG, feature_change, filled, row_change
 
 from sextant_movers.lease import AccountScope, WriterLease
+from sextant_movers.ranking.baseline import BaselineTable
 from sextant_movers.ranking.generation import Coverage, CoverageState, generation_digest
 from sextant_movers.tradingview import producer as module
 from sextant_movers.tradingview.inputs import REFUSED_PREFIXES
@@ -724,6 +725,8 @@ def producer_inputs() -> dict[str, Any]:
     import random
 
     template = filled(reg=REG)
+    table = template.baseline
+    assert isinstance(table, BaselineTable)
     rng = random.Random(20261116)  # noqa: S311 - reproducible synthetic input
     start, runs = SEG.start_ns, []
     damage_names = (
@@ -901,11 +904,11 @@ def producer_inputs() -> dict[str, Any]:
                     str(s.dollar_volume),
                     str(s.trade_count),
                 ]
-                for s in template.baseline.samples
+                for s in table.samples
             ],
-            "provenance": template.baseline.provenance,
-            "known_at": template.baseline.known_at,
-            "feed": template.baseline.feed,
+            "provenance": table.provenance,
+            "known_at": table.known_at,
+            "feed": table.feed,
         },
         "references": {
             s: [str(r.prior_close), r.known_at, r.source] for s, r in template.references.items()
