@@ -14,14 +14,14 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, get_protocol_members
 
 import pytest
 from test_publisher import ASSET, REFS, SCOPE, START, ready, tick
 
 from sextant_movers.ranking import curves
 from sextant_movers.ranking.bars import MINUTE_NS, Bar, nanos
-from sextant_movers.ranking.baseline import NS, BaselineTable, Segment
+from sextant_movers.ranking.baseline import NS, Baseline, Segment
 from sextant_movers.ranking.curves import SessionCurves, build_curves
 from sextant_movers.ranking.generation import Coverage, CoverageState
 from sextant_movers.sessions import ET
@@ -313,16 +313,27 @@ def test_sub_scale_dollars_are_truncated_per_bar_before_summing() -> None:
     assert build([(DAY, [item, item])]).dv[0][1] == 0
 
 
+def test_baseline_protocol_has_only_the_consumed_members() -> None:
+    assert get_protocol_members(Baseline) == {
+        "cumulative",
+        "provenance",
+        "identity",
+        "known_at",
+        "feed",
+        "latest_session",
+    }
+
+
 def test_publisher_accepts_curves_and_source_reason_carries_their_identity() -> None:
     names = ("ZZPBA", "ZZPBB", "ZZPBC")
     prior = SCOPE.session_date - timedelta(days=1)
-    baseline = build(
+    baseline: Baseline = build(
         [(prior, [bar(prior, seg=SCOPE, symbol=s) for s in names])],
         symbols=names,
         segment=SCOPE,
         known_at=START - NS,
     )
-    pub = ready(baseline=cast(BaselineTable, baseline))
+    pub = ready(baseline=baseline)
     assert pub.references[names[0]] is REFS and pub.assets[names[0]] is ASSET
     for second, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
         for name in names:
@@ -338,8 +349,8 @@ def test_publisher_accepts_curves_and_source_reason_carries_their_identity() -> 
 def test_zero_baseline_keeps_engine_ratio_unavailable() -> None:
     names = ("ZZPBA", "ZZPBB", "ZZPBC")
     prior = SCOPE.session_date - timedelta(days=1)
-    baseline = build([(prior, [])], symbols=names, segment=SCOPE, known_at=START - NS)
-    pub = ready(baseline=cast(BaselineTable, baseline))
+    baseline: Baseline = build([(prior, [])], symbols=names, segment=SCOPE, known_at=START - NS)
+    pub = ready(baseline=baseline)
     pub.on_trade(tick(0, name=names[0]))
     pub.on_trade(tick(60, name=names[0]))
     row = pub.states[names[0]].latest
