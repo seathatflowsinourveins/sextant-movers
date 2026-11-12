@@ -42,8 +42,8 @@ def generation() -> RankingGeneration:
                 rank=2,
                 features=features,
                 focus_eligible=False,
-                reasons=metadata
-                + (
+                reasons=(
+                    *metadata,
                     RankingReason("gate_failed", GATES[0]),
                     RankingReason("ZZ_NO"),
                     RankingReason("ZZ_DETAIL", "zz-detail"),
@@ -57,7 +57,7 @@ def generation() -> RankingGeneration:
                 score=D("0.123000"),
                 features=features,
                 focus_eligible=True,
-                reasons=metadata + (RankingReason("ZZ_FOCUS"),),
+                reasons=(*metadata, RankingReason("ZZ_FOCUS")),
             ),
         ),
     )
@@ -65,11 +65,13 @@ def generation() -> RankingGeneration:
 
 def document(**kw: Any) -> dict[str, Any]:
     gen = view.generation_view(generation(), segment="RTH", top_n=2, universe_source="zz-universe")
-    args = dict(reason=None, max_age_s=5, refresh_s=2, written_at_ns=NOW)
+    args: dict[str, Any] = dict(reason=None, max_age_s=5, refresh_s=2, written_at_ns=NOW)
     return view.view_document(gen, **(args | kw))
 
 
 def test_view_rows_has_each_recorded_field_rank_order_and_no_metadata() -> None:
+    assert view.FEATURES == ("move", "move_1m", "move_5m", "dvol_ratio", "trades_accel")
+    assert view.METADATA == frozenset({"SOURCE", "ASSET", "REFERENCE", "LABELS", "CLOCKS"})
     rows = view.view_rows(generation())
     assert rows == [
         {
@@ -104,6 +106,15 @@ def test_view_rows_has_each_recorded_field_rank_order_and_no_metadata() -> None:
     assert view.view_rows(changed)[0]["score"] is None
     assert view.view_rows(changed)[0]["focus_eligible"] is False
     assert view.GATE_LABELS == dict(zip(GATES, ("move", "1m up", "accel", "dvol"), strict=True))
+
+
+@pytest.mark.parametrize("gate", [*GATES, None])
+def test_each_gate_failure_removes_only_its_named_gate(gate: str | None) -> None:
+    gen = generation()
+    row = replace(gen.rows[0], reasons=(RankingReason("gate_failed", gate),))
+    actual = view.view_rows(replace(gen, rows=(row,)))[0]
+    assert actual["gates_passed"] == [g for g in GATES if g != gate]
+    assert actual["reasons"] == ["gate_failed" if gate is None else f"gate_failed:{gate}"]
 
 
 def test_generation_view_has_every_key_and_all_rows_despite_top_n() -> None:
@@ -177,7 +188,10 @@ def test_kept_banners_age_at_render_and_unavailable_never_fresh(
 def test_facts_numbers_gates_focus_and_kept_reason_visibility() -> None:
     doc = document()
     page = view.render_html(doc, now_ns=NOW)
-    clock = lambda ns: datetime.fromtimestamp(ns // NS, ET).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def clock(ns):
+        return datetime.fromtimestamp(ns // NS, ET).strftime("%Y-%m-%d %H:%M:%S %Z")
+
     facts = {
         "Page written": clock(NOW),
         "Generated": f"{clock(NOW)} (age 0 s at render)",
