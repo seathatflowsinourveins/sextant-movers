@@ -744,6 +744,48 @@ def test_no_tick_lock_shared_pointer_has_no_concurrency_guard():
     assert 'f".{unit_dir.name}.pointer"' in source
 
 
+# Review answers for the retained edges.
+
+
+def test_readback_refuses_at_projected_bound_below_caller_age(kw):
+    """With a caller age of three, a projected bound of one second decides the read-back."""
+    with pytest.raises(InputError, match="Research generation expired; lists NOT synced"):
+        tick(
+            kw,
+            clock=lambda: kw["now_ns"] + NS,
+            max_age=3,
+            registry=registry(input_max_age_s=10, heartbeat_max_age_s=10),
+            bounds=DisplayBounds(D("0.1"), D(2), 1),
+        )
+
+
+def test_same_digest_reader_refusal_never_replaces_pointer(kw, monkeypatch):
+    tick(kw)
+    target = kw["unit_dir"].readlink()
+    move = module.os.replace
+    moved = []
+
+    def spy(src, dst):
+        moved.append(Path(dst))
+        return move(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", spy)
+    monkeypatch.setattr(module, "read_research_inputs", Mock(side_effect=OSError("zz-read-fault")))
+    with pytest.raises(OSError, match="zz-read-fault"):
+        tick(kw, symbol_map={name: "ZZY:" + name for name in kw["symbols"]})
+    assert moved and kw["unit_dir"] not in moved
+    assert kw["unit_dir"].readlink() == target
+
+
+def test_empty_asset_source_reaches_written_document(kw):
+    tick(kw)
+    named = kw["j5_path"].read_text().count('\\"source\\": \\"zz-asset\\"')
+    tick(kw, asset_source="")
+    text = kw["j5_path"].read_text()
+    assert named and "zz-asset" not in text
+    assert text.count('\\"source\\": \\"\\"') == named
+
+
 def service_inputs():
     """Seeded tapes: every fetch spans at least thirty complete minutes."""
     import random
