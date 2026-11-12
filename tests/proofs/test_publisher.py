@@ -345,7 +345,7 @@ def test_an_error_outside_the_four_classes_leaves_the_coverage(bad: str) -> None
 LEFT_OUT = ("LANES_PIN", "METHOD", "MessageBus", "environ", "getenv", "socket", "thread")
 
 
-def test_the_module_holds_none_of_the_names_left_out_and_no_publish() -> None:
+def test_the_module_holds_none_of_the_names_left_out_and_has_publish() -> None:
     """The code is checked without its docstrings, which say what nothing here starts."""
     tree = ast.parse(Path(publisher.__file__).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
@@ -356,7 +356,7 @@ def test_the_module_holds_none_of_the_names_left_out_and_no_publish() -> None:
     code = ast.unparse(tree)
     assert [name for name in LEFT_OUT if name in code] == []
     texts = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)}
-    assert not texts & {"common", "adr"} and not hasattr(RankingPublisher, "publish")
+    assert not texts & {"common", "adr"} and hasattr(RankingPublisher, "publish")
 
 
 def intake_answers(m: dict[str, Any], nt: Any) -> dict[str, Any]:
