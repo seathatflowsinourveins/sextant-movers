@@ -517,7 +517,7 @@ def page_answers(m: Any, generations: list[str]) -> list[list[str]]:
     return answers
 
 
-PAGE_DIGEST = "d61a5fad3bcc8b1ccefb0f8eba0287beddf955efa17918d47c358aa39f72c498"
+PAGE_DIGEST = "450083cc270581d70919aab86e77e6da97a95475776f00ea0b0a9a473c851ba9"
 
 
 def test_seeded_page_answers_are_pinned() -> None:
@@ -528,6 +528,9 @@ def test_seeded_page_answers_are_pinned() -> None:
     assert "READY" in states and any(state != "READY" for state in states)
     answers = page_answers(view, sources)
     assert len(answers) == len(sources) * 12 and len(answers) >= 300
+    coverages = [json.loads(answer[0])["generation"]["coverage"] for answer in answers]
+    unknown = sum(c["observed_symbols"] is None or c["expected_symbols"] is None for c in coverages)
+    assert 0 < unknown < len(answers)
     payload = json.dumps(answers, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(payload.encode()).hexdigest() == PAGE_DIGEST
 
@@ -567,12 +570,28 @@ def test_seeded_page_parity_with_the_reference_in_a_child_interpreter() -> None:
     )
     ours = page_answers(view, sources)
     assert len(ours) == len(theirs["answers"])
+    unknown = 0
     for index, (actual, expected) in enumerate(zip(ours, theirs["answers"], strict=True)):
         assert actual[0] == expected[0], f"document JSON differs at {index}"
-        assert actual[1] == expected[1], f"HTML string differs at {index}"
+        coverage = json.loads(actual[0])["generation"]["coverage"]
+        observed, total = coverage["observed_symbols"], coverage["expected_symbols"]
+        if observed is None or total is None:
+            unknown += 1
+            raw = f"{observed} of {total} observed"
+            shown = f"{'n/a' if observed is None else observed} of "
+            shown += f"{'n/a' if total is None else total} observed"
+            assert expected[1].count(raw) == 1, f"reference coverage occurrence at {index}"
+            expected_html = expected[1].replace(raw, shown, 1)
+        else:
+            expected_html = expected[1]
+        assert actual[1] == expected_html, f"HTML string differs at {index}"
+    assert 0 < unknown < len(ours)
     ready = sum(json.loads(source)["coverage"]["state"] == "READY" for source in sources)
     print(f"\nPython: here {here}, reference {theirs['versions']}")
     print(
         f"page parity: {len(sources)} generations ({ready} ready, {len(sources) - ready} not ready)"
     )
-    print(f"page parity: {len(ours)} documents, sorted JSON and HTML equal per document")
+    print(
+        f"page parity: {len(ours)} documents, JSON equal; "
+        f"{len(ours) - unknown} integer-count HTML equal, {unknown} null-count HTML adapted"
+    )
