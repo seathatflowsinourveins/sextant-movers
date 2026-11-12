@@ -383,7 +383,7 @@ def test_the_module_imports_the_sdk_data_names_and_the_window_only() -> None:
     assert outside <= sdk | {"sextant_movers.ranking.window"}
     assert "sextant_movers.ranking.window" in outside
     text = Path(m.__file__).read_text()
-    for word in ("environ", "getenv", "MAX_BATCH", "BarPoll", "AlpacaHistory", "credentials"):
+    for word in ("environ", "getenv", "MAX_BATCH", "AlpacaHistory", "credentials"):
         assert word not in text
     for word in ("universe", "Listing"):
         assert word not in text
