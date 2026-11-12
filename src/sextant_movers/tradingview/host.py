@@ -1,5 +1,10 @@
 """Polled minute bars into the publisher and one display document; no transport.
 
+Callers discard a host after ingest raises and rebuild it by replay: a refused
+bar remains remembered, so an identical retry is skipped as a repeat. A partial
+poll (failed or unrequested symbols) needs a complete poll at that same market clock
+to clear its gap.
+
 Acceptance: the reference, src/sextant/tradingview/host.py:10-275 at
 06562bec0898a7203f4eaf69086ced83d2477e6b, statement and refusal parity.
 Departures: required caller scope and paper_slot pass unchanged to LiveProducer;

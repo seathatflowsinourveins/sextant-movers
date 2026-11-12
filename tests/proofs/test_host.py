@@ -655,6 +655,7 @@ def host_inputs():
                 }
             )
             if missing is not None:
+                # reference_retry: the retried bar is skipped as a repeat (kept host behaviour).
                 # Restore the reference and retry exactly the remembered bar at the same minute.
                 steps.append(
                     {
