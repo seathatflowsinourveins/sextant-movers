@@ -10,9 +10,8 @@ import ast
 import hashlib
 import inspect
 import json
-import os
 import random
-import subprocess
+import sys
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -21,6 +20,7 @@ from typing import Any
 
 import nautilus_trader.model as nt
 import pytest
+import reference_child as child
 from nautilus_trader.model import (
     AggressorSide,
     InstrumentId,
@@ -577,7 +577,9 @@ m = {"Segment": ref.Segment, "BaselineSample": bl.BaselineSample,
      "names": list(rg.ROWS), "units": [u for _, u in rg.ROWS.values()],
      "ReferencePrices": ref.ReferencePrices, "MoverState": ref.MoverState,
      "rank_movers": ref.rank_movers, "advance": advance}
-print("PARITY " + json.dumps({"engine": version("nautilus_trader"), **tape_answers(m, nt)}))
+print("PARITY " + json.dumps({
+    "python": sys.version.split()[0], "engine": version("nautilus_trader"), **tape_answers(m, nt)
+}))
 """
 
 
@@ -585,18 +587,16 @@ print("PARITY " + json.dumps({"engine": version("nautilus_trader"), **tape_answe
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     from importlib.metadata import version
 
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "ranking" / "engine.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
     helpers = "".join(inspect.getsource(f) for f in (shown, row_shown, tape_answers))
-    cmd, env = [python, "-I", "-c", PRELUDE + helpers + CHILD], {"MOVERS_REFERENCE_SRC": src}
-    done = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=900, check=True)
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, PRELUDE + helpers + CHILD, timeout=900)
+    assert theirs.pop("python") == sys.version.split()[0]
+    engine_version = theirs.pop("engine")
+    assert engine_version == version("nautilus_trader")
     mine = tape_answers(OURS, nt)
-    print(f"\nengine: here {version('nautilus_trader')}, reference {theirs.pop('engine')}")
+    print(f"\nengine: here {version('nautilus_trader')}, reference {engine_version}")
     print(f"answers {mine['count']}, kinds {mine['kinds']}; equal: {mine == theirs}")
     assert mine == theirs and theirs["digest"] == PARITY_DIGEST

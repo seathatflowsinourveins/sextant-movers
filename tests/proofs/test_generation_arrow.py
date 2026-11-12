@@ -20,6 +20,7 @@ from typing import Any
 
 import pyarrow as pa
 import pytest
+import reference_child as child
 from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.common import DataActor
 from nautilus_trader.model import CustomData, DataType
@@ -479,7 +480,7 @@ batch = ref.encode_arrow(clean)
 tmp = Path(sys.argv[1])
 write_stream(batch, tmp / "reference.arrows")
 print("PARITY " + json.dumps({
-    "versions": [pa.__version__, nautilus_trader.__version__],
+    "versions": [sys.version.split()[0], pa.__version__, nautilus_trader.__version__],
     "schema": str(ref.ARROW_SCHEMA),
     "metadata": {k.decode(): v.decode() for k, v in ref.ARROW_SCHEMA.metadata.items()},
     "engine": str(ref._RC7_ARROW_SCHEMA),
@@ -489,32 +490,18 @@ print("PARITY " + json.dumps({
     "ours": [ref.generation_digest(r) for r in ref.decode_arrow(read_stream(tmp / "ours.arrows"))],
 }))
 """
-PARITY_NEEDS = (
-    "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof; the second "
-    "names the reference's own interpreter because its module imports the engine and pyarrow "
-    "at its top, at the reference's versions"
-)
 
 
 @pytest.mark.local
 def test_arrow_parity_with_the_reference_in_a_child_interpreter(tmp_path: Path) -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip(PARITY_NEEDS)
+    src, python = child.reference()
     batch = encode_arrow(CLEAN)
     write_stream(batch, tmp_path / "ours.arrows")
     parts = (build_generations, digest_all, row_digest, write_stream, read_stream)
     script = ARROW_PRELUDE + "".join(map(inspect.getsource, parts)) + CHILD
-    done = subprocess.run(
-        [python, "-I", "-c", script, str(tmp_path)],
-        env={"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script, str(tmp_path))
+    here = [sys.version.split()[0], pa.__version__, sys.modules["nautilus_trader"].__version__]
+    assert here == theirs["versions"]
     expected = list(map(generation_digest, CLEAN))
     metadata = {k.decode(): v.decode() for k, v in ARROW_SCHEMA.metadata.items()}
     results = {
@@ -528,8 +515,7 @@ def test_arrow_parity_with_the_reference_in_a_child_interpreter(tmp_path: Path) 
         "(c) this stream read by the reference": theirs["ours"] == expected,
         "surrogates refused": theirs["refused"] == len(REFUSED),
     }
-    here = [pa.__version__, sys.modules["nautilus_trader"].__version__]
-    print(f"pyarrow, engine: here {here}, reference {theirs['versions']}")
+    print(f"python, pyarrow, engine: here {here}, reference {theirs['versions']}")
     print(f"arrow parity over {theirs['count']} generations: {results}")
     assert theirs["count"] == len(CLEAN) == 1290
     assert all(results.values()), results

@@ -13,7 +13,6 @@ import hashlib
 import inspect
 import json
 import os
-import subprocess
 import sys
 import threading
 import urllib.request
@@ -25,6 +24,7 @@ from typing import Any
 from urllib.error import HTTPError
 
 import pytest
+import reference_child as child
 
 from sextant_movers.ranking import listings as lst
 from sextant_movers.ranking.listings import (
@@ -575,9 +575,7 @@ print("PARITY " + json.dumps({"version": sys.version.split()[0], "answers": cano
 
 @pytest.mark.local
 def test_parity_with_the_reference_in_a_child_interpreter(tmp_path: Path) -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     for name, blob_id in REFERENCE_BLOBS.items():
         blob = (Path(src) / "sextant" / "tradingview" / name).read_bytes()
         git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
@@ -585,16 +583,8 @@ def test_parity_with_the_reference_in_a_child_interpreter(tmp_path: Path) -> Non
     ours = canonical(answer_all(lst, parse_directory, tmp_path))
     prelude = "from typing import Any\n"
     script = prelude + "".join(map(inspect.getsource, (build_cases, answer_all, canonical)))
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", script + CHILD],
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script + CHILD)
+    assert theirs["version"] == sys.version.split()[0]
     answers = json.loads(ours)
     print(
         f"parity: {len(answers['cases'])} files, {len(answers['stage'])} stage runs; "

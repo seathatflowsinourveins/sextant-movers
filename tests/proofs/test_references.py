@@ -6,17 +6,16 @@ reference (commit `06562bec0898a7203f4eaf69086ced83d2477e6b`) in a child interpr
 import ast
 import hashlib
 import inspect
-import json
-import os
-import subprocess
 import sys
 import types
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 import pytest
+import reference_child as child
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from exchange_calendars import get_calendar
@@ -407,37 +406,36 @@ names |= {"collect_references": prestage.collect_references}
 answers = canonical(answer_all(types.SimpleNamespace(**names)))
 found = {"python": sys.version.split()[0], "sdk": version("alpaca-py")}
 found |= {"calendar": version("exchange_calendars"), "answers": answers}
+found |= {"pandas": version("pandas"), "pydantic": version("pydantic")}
+found |= {"requests": version("requests")}
 print("PARITY " + json.dumps(found))
 """
 
 
 @pytest.mark.local
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "tradingview" / "prestage.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
     shipped = (Session, Count, client, answer_all, canonical)
     source = "from typing import Any\n" + "".join(map(inspect.getsource, shipped))
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", source + CHILD],
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
-    from importlib.metadata import version
+    theirs = child.run(python, src, source + CHILD)
+    mine = [
+        sys.version.split()[0],
+        version("alpaca-py"),
+        version("exchange_calendars"),
+        version("pandas"),
+        version("pydantic"),
+        version("requests"),
+    ]
+    assert mine == [
+        theirs[k] for k in ("python", "sdk", "calendar", "pandas", "pydantic", "requests")
+    ]
 
     answers = answer_all(this_side())
     ours = canonical(answers)
     print("parity:", *(f"{len(v)} {k}" for k, v in answers.items()))
-    mine = (sys.version.split()[0], version("alpaca-py"), version("exchange_calendars"))
     print(f"this side: Python {mine[0]} alpaca-py {mine[1]} exchange_calendars {mine[2]}")
     print(f"the reference: Python {theirs['python']} alpaca-py {theirs['sdk']}", end=" ")
     print(f"exchange_calendars {theirs['calendar']}")

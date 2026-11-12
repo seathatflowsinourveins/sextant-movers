@@ -8,20 +8,20 @@ import calendar
 import hashlib
 import inspect
 import json
-import os
 import socket
-import subprocess
 import sys
 import time
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from importlib.metadata import version
 from itertools import product
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+import reference_child as child
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -569,15 +569,14 @@ names |= {"nanos": alpaca_history, "Pacer": alpaca_history}
 ref = types.SimpleNamespace(**{name: getattr(home, name) for name, home in names.items()})
 answers = canonical(answer_all(ref))
 found = {"python": sys.version.split()[0], "sdk": version("alpaca-py"), "answers": answers}
+found |= {"pydantic": version("pydantic"), "requests": version("requests")}
 print("PARITY " + json.dumps(found))
 """
 
 
 @pytest.mark.local
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     for name, blob_id in REFERENCE_BLOBS.items():
         blob = (Path(src) / "sextant" / name).read_bytes()
         git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
@@ -585,18 +584,10 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     ours = canonical(answer_all(m))
     shipped = (Session, Count, client, answer_all, canonical)
     source = "from typing import Any\n" + "".join(map(inspect.getsource, shipped))
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", source + CHILD],
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, source + CHILD)
+    mine = [sys.version.split()[0], version("alpaca-py"), version("pydantic"), version("requests")]
+    assert mine == [theirs[k] for k in ("python", "sdk", "pydantic", "requests")]
     answers = json.loads(ours)
-    from importlib.metadata import version
 
     print(
         f"parity: {len(answers['values'])} values, {len(answers['pacer'])} pacer runs, "
