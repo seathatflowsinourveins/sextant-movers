@@ -527,3 +527,335 @@ def test_header_names_public_pins_and_package_sources():
             "publisher.py",
         )
     )
+
+
+# Cut 2: remaining unit edges and observations.
+
+
+@pytest.mark.parametrize("segment", ["PRE", "RTH"])
+@pytest.mark.parametrize("fraction", [0, 123456789])
+def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
+    doc = real_doc(tmp_path / "lease", 3, segment, fraction)
+    before = copy.deepcopy(doc)
+    unit = project(doc)
+    gen = generation(doc)
+    clocks = [b._rfc(getattr(gen, k)) for k in ("ts_event", "input_cutoff", "known_at")]
+    identity = {"as_of": clocks[0], "sha256": doc["generation_sha256"]}
+    common = dict(
+        session_date=gen.session_date.isoformat(),
+        generated_at=clocks[2],
+        as_of=clocks[1],
+        as_of_snapshot=clocks[0],
+        snapshot_status="observed",
+        status="fresh",
+        generation=identity,
+    )
+    movers = [
+        {"symbol": r.symbol, "tradingview_symbol": m, "labels": [f"rank:{r.rank}"]}
+        for r, m in zip(gen.rows, doc["watchlists"]["NS Ranked"], strict=True)
+    ]
+    focus = [m for r, m in zip(gen.rows, movers, strict=True) if r.focus_eligible is True]
+    assert unit.documents() == {
+        "top100.json": {"schema": "morning-pack.candidates/1", **common, "candidates": movers},
+        "focus.json": {"schema": "top100.focus/1", **common, "candidates": focus},
+        "display-lists.json": {
+            "schema": "ns-display-lists/1",
+            **common,
+            "ns_movers": movers,
+            "ns_focus": focus,
+            "bounds": {"gap_bound": "0.05", "rvol_bound": "2", "max_age_s": 60},
+            "counts": {"ns_movers": len(movers), "ns_focus": len(focus)},
+            "excluded_unknown": 0,
+            "armed": "UNVERIFIED",
+            "sources": {"snapshot": identity, "armed_sets": []},
+        },
+    }
+    assert len({id(d["generation"]) for d in unit.documents().values()}) == 3
+    assert not hasattr(unit, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        unit.focus = {}  # type: ignore[misc]
+    assert doc == before and project(doc).documents() == unit.documents()
+    assert clocks[2].endswith(".123456789+00:00" if fraction else "00+00:00")
+    result = write_read(tmp_path, unit, inputs.timestamp(clocks[2]) + timedelta(seconds=1))
+    assert result.generation == identity and not result.unmapped
+    for key, members in (("NS movers", movers), ("NS focus", focus)):
+        assert result.memberships[key] == frozenset(m["tradingview_symbol"] for m in members)
+    # Reader exposes sets; wire arrays retain rank order.
+    assert [m["tradingview_symbol"] for m in movers] == doc["watchlists"]["NS Ranked"]
+    with pytest.raises(inputs.InputError, match="Research generation expired; lists NOT synced"):
+        write_read(tmp_path, unit, inputs.timestamp(clocks[0]) + timedelta(seconds=61))
+
+
+@pytest.mark.parametrize("field", ["gap_bound", "rvol_bound"])
+@pytest.mark.parametrize("value", [D(0), D(-1), D("NaN"), D("Infinity"), D("-Infinity"), 0.1, True])
+def test_decimal_bounds_each_edge(field, value):
+    from typing import Any
+
+    kw: dict[str, Any] = dict(gap_bound=D("0.05"), rvol_bound=D(2), max_age_s=1) | {field: value}
+    refuse(lambda: b.DisplayBounds(**kw), "Sourced positive Decimal display bounds required")
+
+
+@pytest.mark.parametrize("field", ["ranker_version", "profile_version"])
+def test_generation_identity_other_fields(doc, field):
+    refuse(
+        lambda: project(rebuild(doc, **{field: "zz-other"})),
+        "j5 generation identity mismatch" + SUFFIX,
+    )
+
+
+@pytest.mark.parametrize("field", ["input_cutoff", "known_at"])
+def test_each_generation_clock_order(doc, field):
+    gen = generation(doc)
+    kw = (
+        {"input_cutoff": gen.known_at + 1}
+        if field == "input_cutoff"
+        else {"known_at": gen.ts_init + 1}
+    )
+    refuse(lambda: project(rebuild(doc, **kw)), "j5 generation clocks inconsistent" + SUFFIX)
+
+
+@pytest.mark.parametrize("count", [100, 101])
+def test_members_at_bound_and_one_past_untruncated(tmp_path, count):
+    doc = real_doc(tmp_path / "lease", count)
+    if count == 101:
+        refuse(lambda: project(doc), "j5 ranked membership empty or oversize" + SUFFIX)
+    else:
+        assert len(project(doc).top100["candidates"]) == count
+
+
+@pytest.mark.parametrize(
+    "lag", [inputs.MAX_SNAPSHOT_LAG_S * SECOND, inputs.MAX_SNAPSHOT_LAG_S * SECOND + 1]
+)
+def test_lag_at_bound_and_one_nanosecond_past(doc, lag):
+    gen = generation(doc)
+    at = gen.ts_event + lag
+    changed = rebuild(doc, input_cutoff=at, known_at=at, ts_init=at)
+    changed.update(generated_at_ns=at, expires_at_ns=at + 10 * NS)
+    if lag % NS:
+        refuse(lambda: project(changed), EXPIRED)
+    else:
+        assert project(changed)
+
+
+@pytest.mark.parametrize("life", [NS - 1, NS, NS + 1])
+def test_lifetime_one_second_and_each_adjacent_nanosecond(doc, life):
+    changed = damage(doc, "lifetime")
+    changed["expires_at_ns"] = generation(changed).ts_event + life
+    if life < NS:
+        refuse(lambda: project(changed), LIFETIME)
+    else:
+        assert project(changed).display_lists["bounds"]["max_age_s"] == 1
+
+
+@pytest.mark.parametrize("value", ["duplicate", "prefix", "extra", "second_list"])
+def test_membership_faults(doc, value):
+    changed = copy.deepcopy(doc)
+    members = changed["watchlists"]["NS Ranked"]
+    reason = "j5 ranked mappings inexact or aliased"
+    if value == "duplicate":
+        members[1] = members[0]
+    elif value == "prefix":
+        members[0] = next(iter(sorted(inputs.REFUSED_PREFIXES))) + ":ZZB000"
+    elif value == "extra":
+        members.append("ZZX:ZZEXTRA")
+        reason = "j5 ranked membership empty or oversize"
+    else:
+        changed["watchlists"]["zz-second"] = []
+        reason = "j5 ranked membership missing"
+    refuse(lambda: project(changed), reason + SUFFIX)
+
+
+@pytest.mark.parametrize("cause", ["move", "dvol_ratio", "accel", "score", "rank"])
+def test_score_features_rank_disagreements(doc, cause):
+    if cause in {"move", "dvol_ratio"}:
+        changed = feature(doc, cause, value=None)
+        reason = "j5 score does not match its features"
+    elif cause == "accel":
+        changed, reason = feature(doc, "trades_accel", value=None), "j5 rank order mismatch"
+    elif cause == "score":
+        changed, reason = row(doc, score=None), "j5 rank without score"
+    else:
+        changed, reason = row(doc, rank=None), "j5 rank order mismatch"
+    refuse(lambda: project(changed), reason + SUFFIX)
+
+
+@pytest.mark.parametrize("cause", ["partial", "not_completed", *b.KEY_FEATURES])
+def test_each_projected_completeness_check(doc, cause):
+    if cause in {"partial", "not_completed"}:
+        changed = row(doc, **({"partial": True} if cause == "partial" else {"completed": False}))
+    else:
+        changed = row(
+            doc, features=tuple(f for f in generation(doc).rows[0].features if f.name != cause)
+        )
+        if cause in {"move", "dvol_ratio", "trades_accel"}:
+            # Ranking checks precede projection. An unscored, unpaired row cannot witness this.
+            reason = (
+                "j5 rank order mismatch"
+                if cause == "trades_accel"
+                else ("j5 score does not match its features")
+            )
+            refuse(lambda: project(changed), reason + SUFFIX)
+            return
+    refuse(lambda: project(changed), "j5 projected row incomplete" + SUFFIX)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [("move_1m", None), ("move_1m", D(0)), ("move_1m", D(-1)), ("price", D(0)), ("price", D(-1))],
+)
+def test_focus_requires_positive_minute_move_and_price(doc, name, value):
+    changed = feature(row(doc, focus_eligible=True), name, value=value)
+    refuse(lambda: project(changed), "j5 focus qualification incomplete" + SUFFIX)
+
+
+def test_sources_return_is_unused_and_shared_session_bounds(doc, monkeypatch):
+    tree = ast.parse(Path(b.__file__).read_text())
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Expr)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+        and n.value.func.id == "_sources"
+    ]
+    assert len(calls) == 1
+    assert b._sources(generation(doc), doc["params_hash"])["feed"] == producer.SIP_FEED
+    monkeypatch.setattr(inputs, "PRE_START", inputs.OVERNIGHT_START)
+    refuse(lambda: project(doc), "j5 generation session mismatch" + SUFFIX)
+
+
+@pytest.mark.parametrize("clock", ["ts_event", "input_cutoff", "known_at"])
+def test_overnight_refuses_for_each_clock(doc, clock):
+    gen = generation(doc)
+    day = gen.session_date - timedelta(days=3)  # synthetic Tuesday before this Friday
+    text = day.isoformat() + ("T08:59:00+00:00" if clock == "ts_event" else "T00:59:00+00:00")
+    if clock != "ts_event":
+        # 19:59 ET on Tuesday; the overnight belongs to Wednesday, both trading dates.
+        text = (day + timedelta(days=1)).isoformat() + "T00:59:00+00:00"
+    changed = shift(doc, inputs._ns(text) - gen.ts_event)
+    shifted = generation(changed)
+    boundary = shifted.ts_event + 60 * NS
+    kw = {"known_at": boundary, "ts_init": boundary}
+    if clock != "known_at":
+        kw["input_cutoff"] = boundary
+    changed = rebuild(changed, session_date=day, **kw)
+    changed.update(generated_at_ns=boundary, expires_at_ns=boundary + 120 * NS)
+    current = generation(changed)
+    order = ("ts_event", "input_cutoff", "known_at")
+    answers = [b._session(inputs.timestamp(b._rfc(getattr(current, key)))) for key in order]
+    index = order.index(clock)
+    assert all(answer == (day.isoformat(), False) for answer in answers[:index])
+    assert answers[index] != (day.isoformat(), False)
+    refuse(lambda: project(changed), "j5 generation session mismatch" + SUFFIX)
+
+
+def test_narrowed_age_excluded_unknown_and_paired_focus_subset(doc):
+    gen = generation(doc)
+    last = gen.rows[-1]
+    changed = rebuild(doc, rows=(*gen.rows[:-1], replace(last, score=None, rank=None)))
+    changed["watchlists"]["NS Ranked"] = doc["watchlists"]["NS Ranked"][:1]
+    changed["expires_at_ns"] = gen.ts_event + 3 * NS + 99
+    unit = project(changed)
+    assert unit.display_lists["excluded_unknown"] == 1
+    assert unit.display_lists["bounds"]["max_age_s"] == 3
+    assert len(unit.top100["candidates"]) == len(unit.focus["candidates"]) == 1
+    assert unit.focus["candidates"] == unit.top100["candidates"]
+
+
+def test_kept_lagged_projection_has_no_readable_interior(doc, tmp_path):
+    gen = generation(doc)
+    at = gen.ts_event + inputs.MAX_SNAPSHOT_LAG_S * NS
+    changed = rebuild(doc, input_cutoff=at, known_at=at, ts_init=at)
+    changed.update(generated_at_ns=at, expires_at_ns=at + 10 * NS)
+    unit = project(changed)
+    assert unit.display_lists["bounds"]["max_age_s"] == 60
+    # Every now >= generated_at is already beyond the projected display age.
+    with pytest.raises(inputs.InputError, match="Research generation expired; lists NOT synced"):
+        write_read(tmp_path, unit, inputs.timestamp(unit.display_lists["generated_at"]))
+
+
+def test_post_source_is_retained_and_focus_false_selects_nothing(doc):
+    changed = sources(doc, segment="POST")
+    changed = rebuild(
+        changed, rows=tuple(replace(r, focus_eligible=False) for r in generation(changed).rows)
+    )
+    unit = project(changed)
+    assert unit.focus["candidates"] == unit.display_lists["ns_focus"] == []
+
+
+def test_unknown_focus_flag_selects_nothing(doc):
+    # The generation record allows an unknown flag; only a true one puts a paired row in focus.
+    before = project(doc)
+    assert before.focus["candidates"] and before.display_lists["ns_focus"]
+    rows = tuple(replace(r, focus_eligible=None) for r in generation(doc).rows)
+    unit = project(rebuild(doc, rows=rows))
+    assert unit.focus["candidates"] == unit.display_lists["ns_focus"] == []
+    assert len(unit.top100["candidates"]) == len(before.top100["candidates"]) > 0
+
+
+@pytest.mark.parametrize("flag", [None, False])
+def test_focus_qualification_is_asked_only_of_a_true_flag(doc, flag):
+    # A row not flagged for focus stays ranked whatever its minute move, and out of focus.
+    changed = feature(row(doc, focus_eligible=flag), "move_1m", value=D(0))
+    unit = project(changed)
+    first = generation(changed).rows[0].symbol
+    assert first in [c["symbol"] for c in unit.top100["candidates"]]
+    assert first not in [c["symbol"] for c in unit.focus["candidates"]]
+
+
+def test_all_reference_refusal_statements_are_kept():
+    tree = ast.parse(Path(b.__file__).read_text())
+    messages = [
+        str(n.exc.args[0].value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Raise)
+        and isinstance(n.exc, ast.Call)
+        and isinstance(n.exc.func, ast.Name)
+        and n.exc.func.id == "BridgeError"
+        and isinstance(n.exc.args[0], ast.Constant)
+    ]
+    expected = [
+        text + ("" if case == "generation_object" else SUFFIX) for case, text in FAULTS.items()
+    ]
+    expected += [
+        FIRST,
+        "Sourced positive Decimal display bounds required",
+        "Generation clocks must be nonnegative nanoseconds",
+        "Generation clock does not round-trip as RFC3339",
+        "Generation clock does not round-trip as RFC3339",
+        "j5 generation expired" + SUFFIX,
+    ]
+    assert len(messages) == len(expected) == 32
+    assert sorted(messages) == sorted(expected)
+
+
+def test_rank_ties_use_acceleration_then_symbol(doc):
+    gen = generation(doc)
+    # Equal score/acceleration keeps lexical tie order; raising acceleration changes it.
+    assert [r.symbol for r in gen.rows] == sorted(r.symbol for r in gen.rows)
+    changed = feature(doc, "trades_accel", value=D("0.0001"))
+    refuse(lambda: project(changed), "j5 rank order mismatch" + SUFFIX)
+    # A coherent, higher score with the old rank also refuses.
+    second = gen.rows[1]
+    assert second.score is not None
+    move = next(f.value for f in second.features if f.name == "move")
+    assert move is not None
+    new_features = tuple(
+        replace(f, value=move * 2) if f.name == "move" else f for f in second.features
+    )
+    changed = rebuild(
+        doc,
+        rows=(
+            gen.rows[0],
+            replace(second, score=second.score * 2, features=new_features),
+            *gen.rows[2:],
+        ),
+    )
+    refuse(lambda: project(changed), "j5 rank order mismatch" + SUFFIX)
+
+
+@pytest.mark.parametrize("prefix", sorted(inputs.REFUSED_PREFIXES))
+def test_every_shared_refused_prefix(doc, prefix):
+    changed = copy.deepcopy(doc)
+    changed["watchlists"]["NS Ranked"][0] = prefix + ":ZZB000"
+    refuse(lambda: project(changed), "j5 ranked mappings inexact or aliased" + SUFFIX)
