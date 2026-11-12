@@ -31,8 +31,8 @@ NOW = START + 360 * NS + 100
 COVER = Coverage(CoverageState.READY, True, 3, 3, 0, 0, 0, (RankingReason("ZZ_COVER"),))
 
 
-def filled(**kw: Any) -> RankingPublisher:
-    pub = ready(registry=registry(), **kw)
+def filled(*, reg: Any = None, **kw: Any) -> RankingPublisher:
+    pub = ready(registry=registry() if reg is None else reg, **kw)
     for name in NAMES:
         for second, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
             pub.on_trade(tick(second, price, name=name))
