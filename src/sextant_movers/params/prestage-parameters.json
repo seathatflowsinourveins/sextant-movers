@@ -1,0 +1,11 @@
+[
+  {
+    "name": "prestage_request_budget",
+    "unit": "requests/minute",
+    "value": 200,
+    "source": "Alpaca, About Market Data API, https://docs.alpaca.markets/docs/about-market-data-api, read by the lead 2026-11-12: Historical API calls on the Basic plan, \"200 / min\". The reference, lanes/tradingview/prestage-parameters.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row prestage_request_budget. A starting value, never measured success.",
+    "calibration": "UNCALIBRATED",
+    "last_change": "2026-11-12",
+    "scope": "REVIEWED"
+  }
+]

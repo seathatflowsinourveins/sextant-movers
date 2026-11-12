@@ -1,0 +1,29 @@
+{
+  "schema": "tv-display-bounds.registry/1",
+  "rows": [
+    {
+      "name": "gap_bound",
+      "unit": "fraction",
+      "value": "0.05",
+      "source": "The reference, lanes/tradingview/display-bounds.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row gap_bound; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-12"
+    },
+    {
+      "name": "rvol_bound",
+      "unit": "ratio",
+      "value": "2",
+      "source": "The reference, lanes/tradingview/display-bounds.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row rvol_bound; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-12"
+    },
+    {
+      "name": "max_age_s",
+      "unit": "seconds",
+      "value": 600,
+      "source": "The reference, lanes/tradingview/display-bounds.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row max_age_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-12"
+    }
+  ]
+}
