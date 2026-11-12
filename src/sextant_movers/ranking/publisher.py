@@ -13,8 +13,9 @@ sorted symbols: a repeat counts, and nothing is checked.
 `AssetState.eligible` holds when the source is set, `0 <= known_at <= now < expires_at`, the halt
 flag is exactly False and the security type is in the supplied set. `RankingPublisher` takes the
 engine's `TradeTick` (`model/__init__.pyi:7035`) through `on_trade`, folds it with
-`engine.advance_mover` and degrades its coverage on the engine's own errors, re-raised. It sends
-through the injected `send(DataType, CustomData)`, the shape of `DataActor.publish_data`
+`engine.advance_mover` and degrades its coverage on a refused trade, re-raised: the engine's own
+errors, a name outside the universe or without references, and a fact the engine does not take. It
+sends through the injected `send(DataType, CustomData)`, the shape of `DataActor.publish_data`
 (`common/__init__.pyi:719`); the method version, the eligible security types and the price band
 edges are required and stored, used by `publish`, the next part. Nothing here starts a stream, a
 socket, a thread or a node, and nothing here places an order.
