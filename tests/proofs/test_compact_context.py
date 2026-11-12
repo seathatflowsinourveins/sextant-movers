@@ -8,6 +8,9 @@ code.claude.com/docs/en/settings-reference.md, `idleCompaction`. All read
 2026-11-09. Carried from Sextant's tests/proofs/test_compact_context.py (see
 ORIGINS.md); the state folder is named by the MOVERS_STATE_DIR variable, never
 by a path in this public repository.
+
+Subagent marker: hooks.md, "Common input fields", read 2026-11-11. `agent_id`
+identifies a subagent; `agent_type` alone also describes a session's --agent.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[2]
 SCRIPT = ROOT / "scripts" / "compact_context.py"
@@ -194,6 +199,64 @@ def test_hook_input_agent_type_selects_the_role(tmp_path: Path) -> None:
     assert out.returncode == 0, out.stderr
     assert _pointer("lander") in out.stdout
     assert "MOVERS-LEAD-STATE.md" not in out.stdout
+
+
+def test_session_compaction_keeps_its_own_role_pointer(tmp_path: Path) -> None:
+    payload = {
+        "session_id": "session-proof",
+        "transcript_path": str(tmp_path / "session.jsonl"),
+        "cwd": str(tmp_path),
+        "hook_event_name": "SessionStart",
+        "source": "compact",
+        "agent_type": "lead",
+    }
+    out = _run(
+        "session-start", state=_state(tmp_path), tmp_path=tmp_path, stdin=json.dumps(payload)
+    )
+    assert out.returncode == 0, out.stderr
+    assert "Role: lead" in out.stdout and _pointer("lead") in out.stdout
+    assert _pointer("lander") not in out.stdout
+
+
+@pytest.mark.parametrize("mode", ["session-start", "pre-compact"])
+@pytest.mark.parametrize("agent_type", ["worker", "lead", "Explore", None])
+@pytest.mark.parametrize("args", [(), ("--role", "lead")])
+def test_subagent_compaction_emits_no_session_role_context(
+    tmp_path: Path, mode: str, agent_type: str | None, args: tuple[str, ...]
+) -> None:
+    # The common fields identify who a hook fires in; they do not promise that
+    # SessionStart fires inside a subagent. Exercise that documented input shape.
+    payload: dict[str, str | None] = {
+        "session_id": "session-proof",
+        "transcript_path": str(tmp_path / "session.jsonl"),
+        "cwd": str(tmp_path),
+        "hook_event_name": "SessionStart" if mode == "session-start" else "PreCompact",
+        "agent_id": "subagent-proof",
+    }
+    if mode == "session-start":
+        payload["source"] = "compact"
+    else:
+        payload.update(trigger="auto", custom_instructions=None)
+    if agent_type is not None:
+        payload["agent_type"] = agent_type
+    for state in (_state(tmp_path), None):
+        out = _run(mode, *args, state=state, tmp_path=tmp_path, stdin=json.dumps(payload))
+        assert out.returncode == 0, out.stderr
+        assert out.stdout == ""
+        assert out.stderr == ""
+
+
+@pytest.mark.parametrize("empty", [None, "", 0, []])
+def test_an_agent_id_that_names_no_one_keeps_the_sessions_reminder(
+    tmp_path: Path, empty: object
+) -> None:
+    # Only a non-empty string is an identity; an input that always carries the
+    # field, as null or empty, is still an ordinary session.
+    payload = {"hook_event_name": "SessionStart", "source": "compact", "agent_type": "lead"}
+    stdin = json.dumps(payload | {"agent_id": empty})
+    out = _run("session-start", state=_state(tmp_path), tmp_path=tmp_path, stdin=stdin)
+    assert out.returncode == 0, out.stderr
+    assert "Role: lead" in out.stdout and _pointer("lead") in out.stdout
 
 
 def test_unknown_role_lists_every_known_role(tmp_path: Path) -> None:
