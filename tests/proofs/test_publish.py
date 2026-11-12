@@ -1,8 +1,7 @@
 """Part 5e-2: publication and both engine views, with synthetic inputs only.
 
 Build on the reference's `src/sextant/ranking/publisher.py:136-309` at
-`06562bec0898a7203f4eaf69086ced83d2477e6b`. The injected send uses the engine's
-`DataActor.publish_data`, `CustomData` and `DataType` as shipped at `d53849b2`.
+`06562bec0898a7203f4eaf69086ced83d2477e6b`.
 """
 
 import json
@@ -31,7 +30,7 @@ NOW = START + 360 * NS + 100
 COVER = Coverage(CoverageState.READY, True, 3, 3, 0, 0, 0, (RankingReason("ZZ_COVER"),))
 
 
-def populated(**kw: Any) -> RankingPublisher:
+def filled(**kw: Any) -> RankingPublisher:
     pub = ready(registry=registry(), **kw)
     for name in NAMES:
         for second, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
@@ -41,9 +40,9 @@ def populated(**kw: Any) -> RankingPublisher:
 
 
 def full(pub: RankingPublisher, now: int = NOW) -> RankingGeneration:
-    generation = pub.publish(now=now)
-    assert generation is not None
-    return generation
+    gen = pub.publish(now=now)
+    assert gen is not None
+    return gen
 
 
 def changed(pub: RankingPublisher, name: str = "ZZPBA", **kw: Any) -> None:
@@ -52,20 +51,18 @@ def changed(pub: RankingPublisher, name: str = "ZZPBA", **kw: Any) -> None:
     pub.states[name] = replace(state, latest=replace(state.latest, **kw))
 
 
-def suppressed(pub: RankingPublisher, now: int = NOW) -> RankingGeneration:
-    generation = full(pub, now)
-    assert generation.coverage == replace(
-        pub.coverage, state=CoverageState.DEGRADED, complete=False
-    )
+def unready(pub: RankingPublisher, now: int = NOW) -> RankingGeneration:
+    gen = full(pub, now)
+    assert gen.coverage == replace(pub.coverage, state=CoverageState.DEGRADED, complete=False)
     assert all(
         r.score is r.rank is None
         and not r.features
         and not r.completed
         and r.partial
         and not r.focus_eligible
-        for r in generation.rows
+        for r in gen.rows
     )
-    return generation
+    return gen
 
 
 def test_gate_names_are_the_reference_order_as_test_input_only() -> None:
@@ -79,76 +76,76 @@ def test_gate_names_are_the_reference_order_as_test_input_only() -> None:
 
 @pytest.mark.parametrize("state", [s for s in CoverageState if s is not CoverageState.READY])
 def test_ready_requires_the_ready_state(state: CoverageState) -> None:
-    pub = populated()
+    pub = filled()
     pub.set_coverage(replace(COVER, state=state))
-    suppressed(pub)
+    unready(pub)
 
 
 def test_ready_requires_complete() -> None:
-    pub = populated()
+    pub = filled()
     pub.set_coverage(replace(COVER, complete=False))
-    suppressed(pub)
+    unready(pub)
 
 
 @pytest.mark.parametrize("count", [None, 2, 4])
-def test_ready_requires_expected_count_equal_to_universe(count: int | None) -> None:
-    pub = populated()
+def test_ready_requires_matching_expected_count(count: int | None) -> None:
+    pub = filled()
     pub.set_coverage(replace(COVER, expected_symbols=count))
-    suppressed(pub)
+    unready(pub)
 
 
 @pytest.mark.parametrize("count", [None, 2, 4])
-def test_ready_requires_observed_count_equal_to_universe(count: int | None) -> None:
-    pub = populated()
+def test_ready_requires_matching_observed_count(count: int | None) -> None:
+    pub = filled()
     pub.set_coverage(replace(COVER, observed_symbols=count))
-    suppressed(pub)
+    unready(pub)
 
 
 @pytest.mark.parametrize("count", [None, 1])
 def test_ready_requires_zero_missing(count: int | None) -> None:
-    pub = populated()
+    pub = filled()
     pub.set_coverage(replace(COVER, missing_symbols=count))
-    suppressed(pub)
+    unready(pub)
 
 
 @pytest.mark.parametrize("count", [None, 1])
 def test_ready_requires_zero_invalid(count: int | None) -> None:
-    pub = populated()
+    pub = filled()
     pub.set_coverage(replace(COVER, invalid_symbols=count))
-    suppressed(pub)
+    unready(pub)
 
 
 @pytest.mark.parametrize("count", [None, 1])
 def test_ready_requires_zero_late(count: int | None) -> None:
-    pub = populated()
+    pub = filled()
     pub.set_coverage(replace(COVER, late_symbols=count))
-    suppressed(pub)
+    unready(pub)
 
 
 def test_ready_requires_event_at_or_after_segment_start() -> None:
-    pub = populated()
+    pub = filled()
     pub.last_event = START - 1
-    suppressed(pub, START)
+    unready(pub, START)
 
 
 def test_ready_requires_event_at_or_before_input_cutoff() -> None:
-    pub = populated()
+    pub = filled()
     pub.input_cutoff = pub.last_event - 1
-    suppressed(pub)
+    unready(pub)
 
 
-def test_ready_requires_cutoff_at_or_before_now_and_constructor_keeps_incoherence() -> None:
-    pub = populated()
+def test_ready_requires_cutoff_before_now_constructor_keeps_incoherence() -> None:
+    pub = filled()
     pub.input_cutoff = NOW + 1
-    generation = suppressed(pub)
-    assert generation.input_cutoff > generation.known_at
+    gen = unready(pub)
+    assert gen.input_cutoff > gen.known_at
     assert (pub.sequence, pub.published_at) == (1, NOW)
 
 
 def test_ready_requires_now_before_segment_end() -> None:
-    pub = populated()
+    pub = filled()
     pub.last_event = pub.input_cutoff = pub.segment.end_ns
-    suppressed(pub, pub.segment.end_ns)
+    unready(pub, pub.segment.end_ns)
 
 
 def test_ready_accepts_all_equal_time_links_at_segment_start() -> None:
@@ -158,13 +155,13 @@ def test_ready_accepts_all_equal_time_links_at_segment_start() -> None:
 
 
 def test_ready_accepts_input_age_at_the_edge() -> None:
-    pub = populated()
+    pub = filled()
     assert full(pub, pub.last_event + pub.registry.seconds("input_max_age_s")).coverage is COVER
 
 
 def test_ready_refuses_input_age_one_past_the_edge() -> None:
-    pub = populated()
-    suppressed(pub, pub.last_event + pub.registry.seconds("input_max_age_s") + 1)
+    pub = filled()
+    unready(pub, pub.last_event + pub.registry.seconds("input_max_age_s") + 1)
 
 
 def test_ranking_is_called_only_when_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,18 +174,18 @@ def test_ranking_is_called_only_when_ready(monkeypatch: pytest.MonkeyPatch) -> N
         return original(rows)
 
     monkeypatch.setattr(publisher, "rank_movers", rank)
-    pub = populated()
+    pub = filled()
     full(pub)
     assert called == [tuple(s.latest for s in pub.states.values())]
     pub.set_coverage(replace(COVER, complete=False))
-    suppressed(pub, NOW + NS)
+    unready(pub, NOW + NS)
     assert len(called) == 1
 
 
 @pytest.mark.parametrize("failed", [None, *engine.GATES])
 @pytest.mark.parametrize("asset_kind", ["unknown", "ineligible", "eligible"])
-def test_each_row_reason_in_order_and_each_focus_link(failed: str | None, asset_kind: str) -> None:
-    pub = populated()
+def test_row_reasons_and_each_focus_link(failed: str | None, asset_kind: str) -> None:
+    pub = filled()
     state = pub.states["ZZPBA"]
     mover = state.latest
     assert mover is not None
@@ -241,14 +238,14 @@ def test_each_row_reason_in_order_and_each_focus_link(failed: str | None, asset_
 
 
 def test_all_failed_gates_keep_the_engine_order() -> None:
-    pub = populated()
+    pub = filled()
     changed(pub, gates_passed=())
     row = next(r for r in full(pub).rows if r.symbol == "ZZPBA")
     assert tuple(r.detail for r in row.reasons if r.code == "gate_failed") == engine.GATES
 
 
-def test_each_feature_value_and_its_two_times_including_last_price_time() -> None:
-    pub = populated()
+def test_features_values_times_and_last_price_time() -> None:
+    pub = filled()
     mover = pub.states["ZZPBA"].latest
     assert mover is not None
     obs = dict(mover.observations) | {"last_price_ts": START + NS}
@@ -271,7 +268,7 @@ def test_each_feature_value_and_its_two_times_including_last_price_time() -> Non
 @pytest.mark.parametrize("edges", [(1, 5), (3, 9)])
 @pytest.mark.parametrize("which", ["below", "low", "high", "unknown"])
 def test_price_band_labels_follow_both_supplied_edges(edges: tuple[int, int], which: str) -> None:
-    pub = populated(price_band_edges=edges)
+    pub = filled(price_band_edges=edges)
     mover = pub.states["ZZPBA"].latest
     assert mover is not None
     low, high = edges
@@ -283,8 +280,8 @@ def test_price_band_labels_follow_both_supplied_edges(edges: tuple[int, int], wh
     assert labels["price_band"] == expected[which]
 
 
-def test_kept_never_traded_name_in_ready_generation_has_no_score_or_focus() -> None:
-    pub = populated()
+def test_kept_never_traded_name_has_no_score_or_focus() -> None:
+    pub = filled()
     pub.states["ZZPBA"] = engine.MoverState()
     row = next(r for r in full(pub).rows if r.symbol == "ZZPBA")
     assert row.score is row.rank is None and row.features == ()
@@ -292,53 +289,51 @@ def test_kept_never_traded_name_in_ready_generation_has_no_score_or_focus() -> N
     assert [r.code for r in row.reasons] == ["SOURCE", "ASSET"]
 
 
-def test_generation_identity_versions_times_and_status_over_three_publications() -> None:
-    pub = populated(method_version="zz-caller-method")
+def test_three_identities_versions_times_and_status() -> None:
+    pub = filled(method_version="zz-caller-method")
     for sequence in range(3):
         now = NOW + sequence * NS
-        generation = full(pub, now)
-        assert generation.generation_id == GenerationId(
+        gen = full(pub, now)
+        assert gen.generation_id == GenerationId(
             "zz-epoch", sequence, sequence - 1 if sequence else None
         )
-        assert generation.session_date == pub.segment.session_date
-        assert (generation.ts_event, generation.input_cutoff) == (pub.last_event, pub.input_cutoff)
-        assert (generation.known_at, generation.ts_init) == (now, now)
-        assert generation.method_version == "zz-caller-method"
-        assert generation.profile_version == "registry/" + pub.registry.params_hash
-        assert generation.ranker_version == RANKER
-        assert generation.status is GenerationStatus.PROVISIONAL
+        assert gen.session_date == pub.segment.session_date
+        assert (gen.ts_event, gen.input_cutoff) == (pub.last_event, pub.input_cutoff)
+        assert (gen.known_at, gen.ts_init) == (now, now)
+        assert gen.method_version == "zz-caller-method"
+        assert gen.profile_version == "registry/" + pub.registry.params_hash
+        assert gen.ranker_version == RANKER
+        assert gen.status is GenerationStatus.PROVISIONAL
         assert (pub.published_at, pub.sequence) == (now, sequence + 1)
 
 
-def test_kept_top_projects_generation_order_which_constructor_sorts_by_rank() -> None:
-    send, pub = Send(), populated()
+def test_kept_top_projects_constructor_rank_order() -> None:
+    send, pub = Send(), filled()
     pub.send = send
     for name, score in zip(sorted(NAMES), (D(1), D(3), D(2)), strict=True):
         changed(pub, name, score=score)
-    generation = full(pub)
-    assert [r.symbol for r in generation.rows] == ["ZZPBB", "ZZPBC", "ZZPBA"]
-    assert [r.rank for r in generation.rows] == [1, 2, 3]
+    gen = full(pub)
+    assert [r.symbol for r in gen.rows] == ["ZZPBB", "ZZPBC", "ZZPBA"]
+    assert [r.rank for r in gen.rows] == [1, 2, 3]
     assert len(send.calls) == 2
     for (dt, envelope), view in zip(send.calls, ("full", "top"), strict=True):
         assert dt == envelope.data_type == ranking_data_type(pub.feed, view)
         assert dt.metadata == {"feed": pub.feed, "view": view, "ranker": RANKER}
-    assert send.calls[0][1].data is generation
+    assert send.calls[0][1].data is gen
     top = send.calls[1][1].data
     assert top == replace(
-        generation,
-        rows=generation.rows[:2],
+        gen,
+        rows=gen.rows[:2],
         coverage=replace(COVER, complete=False, reasons=(RankingReason("TOP_N_PROJECTION"),)),
     )
-    assert (
-        top.coverage.state is CoverageState.READY and top.generation_id == generation.generation_id
-    )
+    assert top.coverage.state is CoverageState.READY and top.generation_id == gen.generation_id
 
 
-def test_kept_not_ready_projection_is_empty_and_retains_degraded_counts() -> None:
-    pub, send = populated(), Send()
+def test_kept_not_ready_top_is_empty_with_degraded_counts() -> None:
+    pub, send = filled(), Send()
     pub.send = send
     pub.set_coverage(replace(COVER, missing_symbols=1))
-    suppressed(pub)
+    unready(pub)
     top = send.calls[1][1].data
     assert top.rows == ()
     assert top.coverage == replace(
@@ -349,8 +344,8 @@ def test_kept_not_ready_projection_is_empty_and_retains_degraded_counts() -> Non
     )
 
 
-def test_kept_equal_clock_is_not_regression_and_early_call_sends_nothing() -> None:
-    pub, send = populated(), Send()
+def test_kept_equal_and_early_clocks_send_nothing() -> None:
+    pub, send = filled(), Send()
     pub.send = send
     first = full(pub)
     for at in (NOW, NOW + NS - 1):
@@ -366,40 +361,40 @@ class Beat:
     def __init__(self, events: list[Any], result: bool | Exception = True) -> None:
         self.events, self.result = events, result
 
-    def emit(self, generation: RankingGeneration) -> bool:
-        self.events.append(("beat", generation))
+    def emit(self, gen: RankingGeneration) -> bool:
+        self.events.append(("beat", gen))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
 
 
-def test_heartbeat_runs_once_after_both_sends_with_full_generation_and_updated_marks() -> None:
+def test_heartbeat_once_after_both_sends_and_marks() -> None:
     events: list[Any] = []
 
     class ObservedBeat(Beat):
-        def emit(self, generation: RankingGeneration) -> bool:
+        def emit(self, gen: RankingGeneration) -> bool:
             assert (pub.published_at, pub.sequence) == (NOW, 1)
-            return super().emit(generation)
+            return super().emit(gen)
 
-    pub = populated(heartbeat=ObservedBeat(events))
+    pub = filled(heartbeat=ObservedBeat(events))
 
     def send(dt: Any, data: Any) -> None:
         assert pub.published_at is None and pub.sequence == 0
         events.append((dt.metadata["view"], data.data))
 
     pub.send = send
-    generation = full(pub)
+    gen = full(pub)
     assert [event[0] for event in events] == ["full", "top", "beat"]
-    assert events[0][1] is events[2][1] is generation
+    assert events[0][1] is events[2][1] is gen
     assert pub.publish(now=NOW) is None and len(events) == 3
 
 
 @pytest.mark.parametrize("fail_on", [1, 2])
-def test_kept_send_failure_preserves_marks_and_heartbeat_but_full_may_have_sent(
+def test_kept_send_failure_preserves_marks_and_heartbeat(
     fail_on: int,
 ) -> None:
     events: list[Any] = []
-    pub = populated(heartbeat=Beat(events))
+    pub = filled(heartbeat=Beat(events))
     # Start after a successful publication, to prove preservation of noninitial marks too.
     full(pub)
     events.clear()
@@ -420,7 +415,7 @@ def test_kept_send_failure_preserves_marks_and_heartbeat_but_full_may_have_sent(
 @pytest.mark.parametrize("result", [False, RuntimeError("zz-heartbeat")])
 def test_heartbeat_false_or_raise_happens_after_state_advances(result: bool | Exception) -> None:
     events: list[Any] = []
-    pub, send = populated(heartbeat=Beat(events, result)), Send()
+    pub, send = filled(heartbeat=Beat(events, result)), Send()
     pub.send = send
     if isinstance(result, Exception):
         with pytest.raises(RuntimeError, match=r"^zz-heartbeat$"):
@@ -432,9 +427,9 @@ def test_heartbeat_false_or_raise_happens_after_state_advances(result: bool | Ex
 
 
 @pytest.mark.parametrize("now", [True, float(NOW), -1, 2**63])
-def test_generation_refuses_non_int64_publication_clock_before_any_send(now: Any) -> None:
+def test_bad_clock_fails_before_send_or_marks(now: Any) -> None:
     events: list[Any] = []
-    pub, send = populated(heartbeat=Beat(events)), Send()
+    pub, send = filled(heartbeat=Beat(events)), Send()
     pub.send = send
     with pytest.raises(ValueError, match="ts_init must be an int64 >= 0"):
         pub.publish(now=now)
@@ -443,14 +438,14 @@ def test_generation_refuses_non_int64_publication_clock_before_any_send(now: Any
 
 
 @pytest.mark.parametrize("top_n", [0, -1])
-def test_nonpositive_top_n_is_refused_by_registry_before_publication(top_n: int) -> None:
+def test_registry_refuses_nonpositive_top_n(top_n: int) -> None:
     with pytest.raises(ValueError, match="top_n: non-positive value"):
         registry(top_n=top_n)
 
 
-def test_unserializable_asset_raises_without_sends_or_state_changes() -> None:
+def test_unserializable_asset_preserves_state() -> None:
     events: list[Any] = []
-    pub, send = populated(heartbeat=Beat(events)), Send()
+    pub, send = filled(heartbeat=Beat(events)), Send()
     pub.send = send
     pub.assets["ZZPBA"] = replace(ASSET, source=object())  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="is not JSON serializable"):
@@ -459,15 +454,15 @@ def test_unserializable_asset_raises_without_sends_or_state_changes() -> None:
     assert not send.calls and not events
 
 
-def test_kept_ready_rule_does_not_check_each_states_latest_age() -> None:
-    pub = populated()
+def test_kept_ready_ignores_per_symbol_age() -> None:
+    pub = filled()
     mover = pub.states["ZZPBA"].latest
     assert mover is not None
     obs = dict(mover.observations) | {"ts_event": START, "ts_init": START, "last_price_ts": START}
     changed(pub, known_at=START, observations=obs)
-    generation = full(pub)
-    row = next(r for r in generation.rows if r.symbol == "ZZPBA")
-    assert generation.coverage is COVER and row.rank is not None
+    gen = full(pub)
+    row = next(r for r in gen.rows if r.symbol == "ZZPBA")
+    assert gen.coverage is COVER and row.rank is not None
     assert all(f.known_at == START for f in row.features)
     assert NOW - START > pub.registry.seconds("input_max_age_s")
 
@@ -477,7 +472,7 @@ import json, sys
 sys.path[:0] = sys.argv[1:3]
 from nautilus_trader.backtest import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.common import DataActor
-from test_publish import populated, NOW
+from test_publish import filled, NOW
 from sextant_movers.ranking.publisher import ranking_data_type
 full, top = ranking_data_type("sip"), ranking_data_type("sip", "top")
 seen, sent = {"full": [], "top": []}, []
@@ -496,7 +491,7 @@ class Top(DataActor):
 
 class Publisher(DataActor):
     def on_start(self):
-        publisher = populated(send=self.publish_data)
+        publisher = filled(send=self.publish_data)
         sent.append(publisher.publish(now=NOW))
 
 engine = BacktestEngine(BacktestEngineConfig(bypass_logging=True, run_analysis=False))
@@ -505,18 +500,18 @@ try:
         engine.add_actor(actor)
     engine.run()
     assert len(seen["full"]) == len(seen["top"]) == 1
-    generation, projection = seen["full"][0], seen["top"][0]
-    assert generation is sent[0] and projection is not generation
-    assert projection.generation_id == generation.generation_id
-    assert projection.rows == generation.rows[:2] and not projection.coverage.complete
-    assert generation.coverage.complete and len(generation.rows) == 3
+    gen, projection = seen["full"][0], seen["top"][0]
+    assert gen is sent[0] and projection is not gen
+    assert projection.generation_id == gen.generation_id
+    assert projection.rows == gen.rows[:2] and not projection.coverage.complete
+    assert gen.coverage.complete and len(gen.rows) == 3
 finally:
     engine.dispose()
-print("BUS two views, one generation each, full identity and top projection")
+print("BUS two views, one gen each, full identity and top projection")
 """
 
 
-def test_publisher_reaches_both_own_view_subscribers_in_an_isolated_engine() -> None:
+def test_both_views_on_the_isolated_engine_bus() -> None:
     here = Path(__file__).resolve()
     done = subprocess.run(
         [sys.executable, "-I", "-c", BUS, str(here.parents[2] / "src"), str(here.parent)],
@@ -525,4 +520,4 @@ def test_publisher_reaches_both_own_view_subscribers_in_an_isolated_engine() -> 
         timeout=300,
     )
     assert done.returncode == 0, done.stderr[-2000:]
-    assert "BUS two views, one generation each, full identity and top projection" in done.stdout
+    assert "BUS two views, one gen each, full identity and top projection" in done.stdout
