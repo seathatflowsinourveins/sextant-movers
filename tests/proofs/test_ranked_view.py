@@ -287,12 +287,80 @@ def test_page_parser_has_no_active_element_or_external_reference() -> None:
     assert "FRESH" not in page
 
 
-@pytest.mark.parametrize(("top_n", "shown"), [(0, ()), (-1, ("ZZVAA",)), (-2, ())])
-def test_observed_nonpositive_top_n_uses_python_slice(top_n: int, shown: tuple[str, ...]) -> None:
+@pytest.mark.parametrize(
+    ("expected", "observed", "shown"),
+    [(None, 3, "3 of n/a"), (3, None, "n/a of 3"), (None, None, "n/a of n/a")],
+)
+def test_unknown_coverage_counts_show_na_without_changing_document(
+    expected: int | None, observed: int | None, shown: str
+) -> None:
+    gen = generation()
+    gen = replace(
+        gen, coverage=replace(gen.coverage, expected_symbols=expected, observed_symbols=observed)
+    )
+    doc = document()
+    doc["generation"] = view.generation_view(
+        gen, segment="RTH", top_n=1, universe_source="zz-universe"
+    )
+    assert doc["generation"]["coverage"]["expected_symbols"] is expected
+    assert doc["generation"]["coverage"]["observed_symbols"] is observed
+    page = view.render_html(doc, now_ns=NOW)
+    assert f"<dt>Coverage</dt><dd>READY, complete True, {shown} observed</dd>" in page
+    assert "None" not in page
+
+
+TOP_N_REFUSALS = [
+    (0, ValueError, "top_n: non-positive value"),
+    (-1, ValueError, "top_n: non-positive value"),
+    (True, TypeError, "top_n must be int, never float or bool"),
+    (1.0, TypeError, "top_n must be int, never float or bool"),
+    ("1", TypeError, "top_n must be int, never float or bool"),
+    (None, TypeError, "top_n must be int, never float or bool"),
+]
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+def test_generation_view_refuses_invalid_top_n(
+    top_n: Any, error: type[Exception], message: str
+) -> None:
+    with pytest.raises(error) as refusal:
+        view.generation_view(generation(), segment="RTH", top_n=top_n, universe_source="zz-source")
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+def test_render_html_refuses_invalid_top_n(
+    top_n: Any, error: type[Exception], message: str
+) -> None:
     doc = document()
     doc["generation"]["top_n"] = top_n
-    page = view.render_html(doc, now_ns=NOW)
-    assert tuple(name for name in ("ZZVAA", "ZZVAB") if name in page) == shown
+    with pytest.raises(error) as refusal:
+        view.render_html(doc, now_ns=NOW)
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+
+
+@pytest.mark.parametrize(("top_n", "error", "message"), TOP_N_REFUSALS)
+@pytest.mark.parametrize("existing_page", [False, True])
+def test_write_view_refuses_invalid_top_n_after_json_before_html(
+    tmp_path: Path, top_n: Any, error: type[Exception], message: str, existing_page: bool
+) -> None:
+    doc = document()
+    page = tmp_path / "ranked.html"
+    if existing_page:
+        view.write_view(tmp_path, doc, now_ns=NOW)
+    old_page = page.read_bytes() if existing_page else None
+    doc["generation"]["top_n"] = top_n
+    with pytest.raises(error) as refusal:
+        view.write_view(tmp_path, doc, now_ns=NOW)
+    assert type(refusal.value) is error
+    assert str(refusal.value) == message
+    assert json.loads((tmp_path / "ranked.json").read_text()) == doc
+    assert (page.read_bytes() if page.exists() else None) == old_page
+    assert {p.name for p in tmp_path.iterdir()} == (
+        {"ranked.json", "ranked.html"} if existing_page else {"ranked.json"}
+    )
 
 
 def test_observed_missing_generation_key_raises_and_future_clock_clamps_age() -> None:
@@ -449,7 +517,7 @@ def page_answers(m: Any, generations: list[str]) -> list[list[str]]:
     return answers
 
 
-PAGE_DIGEST = "d61a5fad3bcc8b1ccefb0f8eba0287beddf955efa17918d47c358aa39f72c498"
+PAGE_DIGEST = "450083cc270581d70919aab86e77e6da97a95475776f00ea0b0a9a473c851ba9"
 
 
 def test_seeded_page_answers_are_pinned() -> None:
@@ -460,6 +528,9 @@ def test_seeded_page_answers_are_pinned() -> None:
     assert "READY" in states and any(state != "READY" for state in states)
     answers = page_answers(view, sources)
     assert len(answers) == len(sources) * 12 and len(answers) >= 300
+    coverages = [json.loads(answer[0])["generation"]["coverage"] for answer in answers]
+    unknown = sum(c["observed_symbols"] is None or c["expected_symbols"] is None for c in coverages)
+    assert 0 < unknown < len(answers)
     payload = json.dumps(answers, sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(payload.encode()).hexdigest() == PAGE_DIGEST
 
@@ -499,12 +570,28 @@ def test_seeded_page_parity_with_the_reference_in_a_child_interpreter() -> None:
     )
     ours = page_answers(view, sources)
     assert len(ours) == len(theirs["answers"])
+    unknown = 0
     for index, (actual, expected) in enumerate(zip(ours, theirs["answers"], strict=True)):
         assert actual[0] == expected[0], f"document JSON differs at {index}"
-        assert actual[1] == expected[1], f"HTML string differs at {index}"
+        coverage = json.loads(actual[0])["generation"]["coverage"]
+        observed, total = coverage["observed_symbols"], coverage["expected_symbols"]
+        if observed is None or total is None:
+            unknown += 1
+            raw = f"{observed} of {total} observed"
+            shown = f"{'n/a' if observed is None else observed} of "
+            shown += f"{'n/a' if total is None else total} observed"
+            assert expected[1].count(raw) == 1, f"reference coverage occurrence at {index}"
+            expected_html = expected[1].replace(raw, shown, 1)
+        else:
+            expected_html = expected[1]
+        assert actual[1] == expected_html, f"HTML string differs at {index}"
+    assert 0 < unknown < len(ours)
     ready = sum(json.loads(source)["coverage"]["state"] == "READY" for source in sources)
     print(f"\nPython: here {here}, reference {theirs['versions']}")
     print(
         f"page parity: {len(sources)} generations ({ready} ready, {len(sources) - ready} not ready)"
     )
-    print(f"page parity: {len(ours)} documents, sorted JSON and HTML equal per document")
+    print(
+        f"page parity: {len(ours)} documents, JSON equal; "
+        f"{len(ours) - unknown} integer-count HTML equal, {unknown} null-count HTML adapted"
+    )
