@@ -206,6 +206,13 @@ def test_fetch_exact_tuple_and_completed_window_at_minute_boundary(kw):
     assert int(end.timestamp()) * NS == kw["now_ns"] == receipt["publish_clock_ns"]
 
 
+def test_fetch_window_ends_at_the_last_closed_minute_not_at_the_clock(kw):
+    ages = registry(input_max_age_s=120, heartbeat_max_age_s=120, generation_max_age_s=120)
+    receipt = tick(kw, now_ns=kw["now_ns"] + 59 * NS, registry=ages)
+    end = kw["source"].calls[0][2]
+    assert int(end.timestamp()) * NS == kw["now_ns"] < receipt["publish_clock_ns"]
+
+
 @pytest.mark.parametrize("delta", [0, 1])
 def test_first_closed_minute_is_replayed_even_when_ranking_unavailable(kw, monkeypatch, delta):
     spy = Mock(wraps=BarFidelityHost.ingest)
@@ -235,6 +242,14 @@ def test_second_clock_behind_replayed_bars(kw):
         kw,
         f"the publication clock moved behind the replayed bars: {at} < {kw['now_ns']}",
         clock=lambda: at,
+    )
+
+
+def test_second_clock_at_segment_start_is_behind_the_bars_not_closed(kw):
+    refusal(
+        kw,
+        f"the publication clock moved behind the replayed bars: {START} < {kw['now_ns']}",
+        clock=lambda: START,
     )
 
 
@@ -306,6 +321,8 @@ def test_existing_unit_must_be_symlink(kw, kind):
         (START - 1, START, False),
         (START, START - 1, False),
         (START, None, True),
+        (D(START), START, False),
+        (START, True, True),
     ],
 )
 def test_drop_stale_equal_age_stays_one_nanosecond_past_loses(event, price, kept):
@@ -323,6 +340,13 @@ def test_drop_stale_uses_existing_input_age_registry(kw, monkeypatch):
     monkeypatch.setattr(module, "_drop_stale", spy)
     tick(kw)
     assert spy.call_args.args[1:] == (kw["now_ns"], kw["registry"].seconds("input_max_age_s"))
+
+
+def test_drop_stale_takes_the_publication_clock_and_the_input_age_row(kw, monkeypatch):
+    spy = Mock(wraps=module._drop_stale)
+    monkeypatch.setattr(module, "_drop_stale", spy)
+    tick(kw, clock=lambda: kw["now_ns"] + 1, registry=registry(input_max_age_s=3))
+    assert spy.call_args.args[1:] == (kw["now_ns"] + 1, 3 * NS)
 
 
 def test_caller_identity_and_reference_asset_facts_pass_unchanged(kw, monkeypatch):
