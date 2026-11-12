@@ -730,7 +730,7 @@ def test_post_source_is_retained_and_focus_false_selects_nothing(doc):
 def test_all_reference_refusal_statements_are_kept():
     tree = ast.parse(Path(b.__file__).read_text())
     messages = [
-        n.exc.args[0].value
+        str(n.exc.args[0].value)
         for n in ast.walk(tree)
         if isinstance(n, ast.Raise)
         and isinstance(n.exc, ast.Call)
