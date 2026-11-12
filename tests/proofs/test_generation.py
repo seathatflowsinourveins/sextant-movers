@@ -10,17 +10,17 @@ import ast
 import hashlib
 import inspect
 import json
-import os
-import subprocess
 import sys
 from collections.abc import Iterable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date, datetime
 from decimal import Decimal as D
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
 import pytest
+import reference_child as child
 
 from sextant_movers.ranking import generation as gen
 from sextant_movers.ranking.generation import (
@@ -624,6 +624,7 @@ def test_seeded_generations_round_trip_through_every_input() -> None:
 PRELUDE = "from collections.abc import Iterable\nfrom typing import Any\n"
 CHILD = """
 import json, os, sys
+from importlib.metadata import version
 SRC = os.environ["MOVERS_REFERENCE_SRC"]
 sys.path.insert(0, SRC)
 from sextant.ranking import generation as ref
@@ -632,6 +633,7 @@ records = build_generations(ref)
 texts = [r.to_json() for r in records]
 theirs = json.load(sys.stdin)
 print("PARITY " + json.dumps({
+    "versions": [sys.version.split()[0], version("nautilus_trader")],
     "count": len(records),
     "canonical": digest_all(ref.canonical_bytes(r) for r in records),
     "json": digest_all(t.encode() for t in texts),
@@ -643,30 +645,15 @@ print("PARITY " + json.dumps({
 
 @pytest.mark.local
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip(
-            "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof; the "
-            "second names the reference's own interpreter because its module imports the engine "
-            "and pyarrow at its top, at the reference's versions"
-        )
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "ranking" / "generation.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
     records = build_generations(gen)
     ours = [r.to_json() for r in records]
     script = PRELUDE + inspect.getsource(build_generations) + inspect.getsource(digest_all) + CHILD
-    done = subprocess.run(
-        [python, "-I", "-c", script],
-        input=json.dumps(ours),
-        env={"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)},
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script, stdin=json.dumps(ours))
+    assert theirs["versions"] == [sys.version.split()[0], version("nautilus_trader")]
     reread = digest_all(canonical_bytes(RankingGeneration.from_json(t)) for t in theirs["texts"])
     results = {
         "canonical_bytes": digest_all(map(canonical_bytes, records)) == theirs["canonical"],

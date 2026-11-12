@@ -10,9 +10,8 @@ and closed-interval cases are ported from the reference's tests at the same comm
 import hashlib
 import inspect
 import json
-import os
 import random
-import subprocess
+import sys
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+import reference_child as child
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 
 from sextant_movers.ranking import baseline
@@ -509,7 +509,10 @@ assert os.path.samefile(ref.__file__, os.path.join(SRC, "sextant", "ranking", "b
 inputs = json.load(sys.stdin)
 tables = build_tables(ref)
 print("PARITY " + json.dumps({
-    "versions": [version("nautilus_trader"), version("exchange_calendars")],
+    "versions": [
+        sys.version.split()[0], version("nautilus_trader"),
+        version("exchange_calendars"), version("pandas"),
+    ],
     "segment_class": Segment.__module__,
     "segments": segment_answers(ref),
     "tables": table_answers(ref, tables),
@@ -525,9 +528,7 @@ HELPERS = (grid, digest, refusal, segment_answers, build_tables, shown, table_an
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     from importlib.metadata import version
 
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "ranking" / "baseline.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
@@ -535,17 +536,16 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     ours = [dump_baseline(t) for t in tables]
     bad = bad_texts(ours, GOOD)
     script = PRELUDE + "".join(inspect.getsource(f) for f in HELPERS) + CHILD
-    done = subprocess.run(
-        [python, "-I", "-c", script],
-        input=json.dumps({"texts": ours, "bad": bad}),
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=True,
+    theirs = child.run(
+        python, src, script, stdin=json.dumps({"texts": ours, "bad": bad}), timeout=900
     )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    mine = [
+        sys.version.split()[0],
+        version("nautilus_trader"),
+        version("exchange_calendars"),
+        version("pandas"),
+    ]
+    assert mine == theirs["versions"]
     refusals = [refusal(load_baseline, t, lambda t: t.identity) for t in bad]
     identities = [t.identity for t in tables]
     results = {
@@ -558,8 +558,7 @@ def test_parity_with_the_reference_in_a_child_interpreter() -> None:
         "(d) refusals": refusals == theirs["bad"],
     }
     refused = sum(r[0] != "ok" for r in refusals)
-    mine = [version("nautilus_trader"), version("exchange_calendars")]
-    print(f"\nengine, calendar: here {mine}, reference {theirs['versions']}")
+    print(f"\npython, engine, calendar, pandas: here {mine}, reference {theirs['versions']}")
     print(
         f"(a) {theirs['segments']['count']} answers; (b) {len(tables)} tables; "
         f"(d) {len(bad)} texts, {refused} refused; Segment from {theirs['segment_class']}"

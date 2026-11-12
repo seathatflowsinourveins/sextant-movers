@@ -9,9 +9,7 @@ directory named by `MOVERS_REFERENCE_SRC`, over the same seeded tick streams and
 import ast
 import hashlib
 import inspect
-import json
-import os
-import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from decimal import Decimal as D
 from importlib.metadata import version
@@ -20,6 +18,7 @@ from typing import Any
 
 import nautilus_trader.model as model
 import pytest
+import reference_child as child
 from nautilus_trader.model import AggressorSide, InstrumentId, Price, Quantity, TradeId, TradeTick
 
 from sextant_movers.ranking import window as win
@@ -445,30 +444,22 @@ answers, digest = run_streams(ref, nt, streams)
 print("PARITY " + json.dumps({
     "streams": len(streams), "answers": answers, "digest": digest,
     "engine": version("nautilus-trader"),
+    "python": sys.version.split()[0],
 }))
 """
 
 
 @pytest.mark.local
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "ranking" / "window.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
     prelude = "from typing import Any\n"
     script = prelude + inspect.getsource(build_streams) + inspect.getsource(run_streams) + CHILD
-    done = subprocess.run(
-        [python, "-I", "-c", script],
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script, timeout=900)
+    assert theirs["python"] == sys.version.split()[0]
+    assert theirs["engine"] == version("nautilus-trader")
     streams = build_streams()
     answers, digest = run_streams(win, model, streams)
     ours = {"streams": len(streams), "answers": answers, "digest": digest}

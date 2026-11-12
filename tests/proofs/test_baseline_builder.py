@@ -11,10 +11,8 @@ import copy
 import hashlib
 import inspect
 import json
-import os
 import platform
 import random
-import subprocess
 from collections import Counter
 from datetime import date, datetime
 from decimal import Decimal
@@ -23,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+import reference_child as child
 
 from sextant_movers.ranking import baseline
 from sextant_movers.ranking.baseline import (
@@ -518,7 +517,8 @@ assert os.path.samefile(ref.__file__, os.path.join(SRC, "sextant", "ranking", "b
 cases = json.load(sys.stdin)
 print("PARITY " + json.dumps({
     "versions": [
-        platform.python_version(), version("nautilus_trader"), version("exchange_calendars")
+        platform.python_version(), version("nautilus_trader"),
+        version("exchange_calendars"), version("pandas"),
     ],
     "results": [run_case(ref, case) for case in cases],
 }))
@@ -529,29 +529,23 @@ print("PARITY " + json.dumps({
 def test_parity_with_the_reference_in_a_child_interpreter() -> None:
     from importlib.metadata import version
 
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip("set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof")
+    src, python = child.reference()
     blob = (Path(src) / "sextant" / "ranking" / "baseline.py").read_bytes()
     git_blob = hashlib.sha1(b"blob %d\0" % len(blob) + blob, usedforsecurity=False)
     assert git_blob.hexdigest() == REFERENCE_BLOB
     good, bad = good_cases(), bad_cases()
     cases = good + [case for case, _ in bad]
     script = PRELUDE + inspect.getsource(shown) + inspect.getsource(run_case) + CHILD
-    done = subprocess.run(
-        [python, "-I", "-c", script],
-        input=json.dumps(cases),
-        env={"MOVERS_REFERENCE_SRC": src},
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=True,
-    )
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script, stdin=json.dumps(cases), timeout=900)
+    mine = [
+        platform.python_version(),
+        version("nautilus_trader"),
+        version("exchange_calendars"),
+        version("pandas"),
+    ]
+    assert mine == theirs["versions"]
     ours = [run_case(baseline, case) for case in cases]
-    mine = [platform.python_version(), version("nautilus_trader"), version("exchange_calendars")]
-    print(f"\npython, engine, calendar: here {mine}, reference {theirs['versions']}")
+    print(f"\npython, engine, calendar, pandas: here {mine}, reference {theirs['versions']}")
     found = Counter(r[1] for r in ours[len(good) :] if r[0] != "ok")
     expected = [(m, r) for (_, m), r in zip(bad, ours[len(good) :], strict=True) if m is not None]
     print(f"good {digest(ours[: len(good)])}; bad {len(bad)}, refused {sum(found.values())}")
