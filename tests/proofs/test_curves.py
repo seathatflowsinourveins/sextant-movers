@@ -378,3 +378,233 @@ def test_interpolation_precedes_median_when_session_curves_cross() -> None:
     assert value is not None
     # Session answers are 50, 50, 60; interpolating the point medians would give 60.
     assert value.dollar_volume == value.trade_count == 50
+
+
+# The seeded extension is kept last so the unit/code portion can be reviewed separately.
+def seeded_cases() -> list[dict[str, Any]]:
+    import random
+
+    rng = random.Random(20261119)  # noqa: S311 - synthetic fixtures, not a secret
+    days = [date(2026, 10, 26) + timedelta(days=i) for i in range(12)]
+    cases = []
+    for case_index in range(42):
+        name = ("PRE", "RTH", "POST")[case_index % 3]
+        minutes = {"PRE": 330, "RTH": 390, "POST": 240}[name]
+        scope = segment(name, minutes)
+        if case_index % 10 == 0:
+            # Target on an early-close day: caller supplies the shorter RTH or earlier POST.
+            hour, minute = {"PRE": (4, 0), "RTH": (9, 30), "POST": (13, 0)}[name]
+            start = nanos(datetime(2026, 11, 27, hour, minute, tzinfo=ET))
+            minutes = 210 if name == "RTH" else minutes
+            scope = Segment(name, date(2026, 11, 27), start, start + minutes * MINUTE_NS, "zz")
+        picked = sorted(rng.sample(days, case_index % 7 + 1))
+        names = list(NAMES if case_index % 2 else reversed(NAMES))
+        sessions = []
+        for day in picked:
+            clock = datetime.fromtimestamp(scope.start_ns // NS, ET).timetz()
+            start = nanos(datetime.combine(day, clock))
+            bars = []
+            for symbol in names:
+                dense = case_index % 4 == 0
+                offsets = list(range(minutes)) if dense else rng.sample(range(minutes), 4)
+                offsets += [-1, minutes, minutes + 1]
+                for offset in offsets:
+                    close = str(D(rng.randint(1, 900_000)).scaleb(-rng.randint(0, 6)))
+                    bars.append(
+                        [
+                            symbol,
+                            start + offset * MINUTE_NS,
+                            "9.75",
+                            close,
+                            rng.randint(0, 400),
+                            rng.randint(0, 80),
+                            "1.125",
+                        ]
+                    )
+            rng.shuffle(bars)
+            sessions.append([day.isoformat(), bars])
+        queries = []
+        for symbol in (*NAMES, "ZZUNKNOWN"):
+            for offset in ("-1", "0", "60", "90.125", str(minutes * 60), str(minutes * 60 + 1)):
+                queries.append([symbol, name, offset])
+        queries.append([NAMES[0], "OVERNIGHT", "60"])
+        for i in range(60):
+            offset = (
+                str(rng.randint(0, minutes) * 60)
+                if i % 2
+                else str(D(rng.randint(0, minutes * 60)) + D("0.375"))
+            )
+            queries.append([rng.choice(NAMES), name, offset])
+        cases.append(
+            {
+                "segment": [
+                    scope.name,
+                    scope.session_date.isoformat(),
+                    scope.start_ns,
+                    scope.end_ns,
+                    scope.source,
+                ],
+                "symbols": names,
+                "sessions": sessions,
+                "known_at": scope.start_ns - NS,
+                "provenance": f"fixture curves {case_index}",
+                "queries": queries,
+            }
+        )
+    return cases
+
+
+def case_answer(
+    make: Any, bar_type: Any, segment_type: Any, case: dict[str, Any]
+) -> dict[str, Any]:
+    """Shared field conversion and answer presentation, never shared curve arithmetic."""
+    name, day, start, end, source = case["segment"]
+    scope = segment_type(name, date.fromisoformat(day), start, end, source)
+    sessions = []
+    for day, fields in case["sessions"]:
+        bars = [bar_type(s, t, D(o), D(c), v, n, D(w)) for s, t, o, c, v, n, w in fields]
+        sessions.append((date.fromisoformat(day), bars))
+    curve = make(
+        sessions,
+        symbols=case["symbols"],
+        segment=scope,
+        known_at=case["known_at"],
+        provenance=case["provenance"],
+    )
+    answers = []
+    for symbol, name, offset in case["queries"]:
+        value = curve.cumulative(symbol, name, D(offset) if "." in offset else int(offset))
+        answers.append(
+            None
+            if value is None
+            else [
+                str(value.dollar_volume),
+                str(value.trade_count),
+                value.sessions,
+                value.known_at,
+                value.provenance,
+            ]
+        )
+    return {
+        "identity": curve.identity,
+        "dv": [a.tobytes().hex() for a in curve.dv],
+        "counts": [a.tobytes().hex() for a in curve.counts],
+        "answers": answers,
+    }
+
+
+def seeded_answers(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def make(*args: Any, **kw: Any) -> SessionCurves:
+        return build_curves(*args, feed="sip", **kw)
+
+    return [case_answer(make, Bar, Segment, case) for case in cases]
+
+
+def answer_digest(answers: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(answers, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+SEEDED_DIGEST = "ed3479bffd44d9744bde2bfa8a50ae0410104fc51dd235ca36221df6bfe82cfb"
+
+
+def test_seeded_builds_bytes_and_query_answers_are_pinned() -> None:
+    cases = seeded_cases()
+    assert len(cases) >= 40 and sum(len(c["queries"]) for c in cases) >= 2000
+    assert {len(c["sessions"]) for c in cases} == set(range(1, 8))
+    assert {c["segment"][0] for c in cases} == {"PRE", "RTH", "POST"}
+    assert answer_digest(seeded_answers(cases)) == SEEDED_DIGEST
+
+
+REFERENCE_SCRIPT = r"""
+import hashlib, json, os, platform, sys
+from array import array
+from datetime import date
+from decimal import Decimal as D
+from typing import Any
+SRC = os.environ["MOVERS_REFERENCE_SRC"]
+paths = {
+    "baseline.py": "33ae6220ed6ecda61709ed4c6b4847ad73f7e41e",
+    "prestage.py": "e3345d330725a4ad12d6e517ae74c592d3633ffe",
+    "bars.py": "8ae03acec28cabae0425cf6af1bce38b08910e60",
+}
+for filename, expected in paths.items():
+    with open(os.path.join(SRC, "sextant", "tradingview", filename), "rb") as handle:
+        blob = handle.read()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected
+# Stop before computing reference answers on a different Python runtime.
+assert platform.python_version() == sys.argv[1], (platform.python_version(), sys.argv[1])
+sys.path.insert(0, SRC)
+from sextant.tradingview import baseline as b
+from sextant.tradingview.bars import Bar
+from sextant.ranking.engine import Segment
+try:
+    from sextant.tradingview.prestage import build_segment_baseline
+except ImportError as exc:
+    build_segment_baseline = None
+    import_error = f"{type(exc).__name__}: {exc}"
+else:
+    import_error = None
+
+cases = json.loads(sys.stdin.read())
+answers, streamed = [], 0
+for case in cases:
+    answers.append(case_answer(b.build_baseline, Bar, Segment, case))
+    if len(case["sessions"]) != 5 or build_segment_baseline is None:
+        continue
+    name, day, start, end, source = case["segment"]
+    scope = Segment(name, date.fromisoformat(day), start, end, source)
+    sessions = []
+    by_day = {}
+    for day, fields in case["sessions"]:
+        parsed = date.fromisoformat(day)
+        sessions.append(parsed)
+        by_day[parsed] = [Bar(s, t, D(o), D(c), v, n, D(w)) for s, t, o, c, v, n, w in fields]
+    class Source:
+        def minute_bars(self, symbols, *, start, end):
+            return by_day[start.date()]
+    result = build_segment_baseline(Source(), segment=scope, symbols=case["symbols"],
+                                    sessions=sessions, known_at=case["known_at"],
+                                    provenance=case["provenance"])
+    assert result.identity == answers[-1]["identity"]
+    assert [a.tobytes().hex() for a in result.dv] == answers[-1]["dv"]
+    assert [a.tobytes().hex() for a in result.counts] == answers[-1]["counts"]
+    streamed += 1
+print("PARITY " + json.dumps({"python": platform.python_version(),
+    "representation": [sys.byteorder, array("q").itemsize, array("i").itemsize],
+    "answers": answers, "streamed": streamed, "import_error": import_error}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_parity_with_the_reference_in_a_child_interpreter() -> None:
+    import inspect
+    import platform
+    import sys
+
+    import reference_child as child
+
+    src, python = child.reference()
+    cases = seeded_cases()
+    # Function definitions resolve names when called, after the child's checked imports.
+    script = (
+        "from __future__ import annotations\n" + inspect.getsource(case_answer) + REFERENCE_SCRIPT
+    )
+    theirs = child.run(python, src, script, platform.python_version(), stdin=json.dumps(cases))
+    assert theirs["python"] == platform.python_version()
+    assert theirs["representation"] == [sys.byteorder, array("q").itemsize, array("i").itemsize]
+    assert theirs["answers"] == seeded_answers(cases)
+    expected = sum(len(c["sessions"]) == 5 for c in cases)
+    if theirs["import_error"] is None:
+        assert theirs["streamed"] == expected
+    else:
+        print("reference prestage import: " + theirs["import_error"])
+        assert theirs["streamed"] == 0
+    print(f"\nPython here/reference: {platform.python_version()}/{theirs['python']}")
+    queries = sum(len(c["queries"]) for c in cases)
+    arrays = 2 * sum(len(c["sessions"]) for c in cases)
+    print(
+        f"parity: {len(cases)} builds, {arrays} arrays, {queries} queries; "
+        f"streamed {theirs['streamed']}; digest {answer_digest(theirs['answers'])}"
+    )
