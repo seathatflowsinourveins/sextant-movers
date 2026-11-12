@@ -14,6 +14,10 @@ Value-for-value acceptance: the reference at 06562bec0898a7203f4eaf69086ced83d24
 Departures: SessionCurves is count-neutral; one build_curves accepts an iterable of
 sessions in strictly ascending date order, finishing each before requesting the next.
 The caller supplies a non-empty string feed, omitted from identity as in the reference.
+Session choice builds on prior_sessions and segment_start, with no import cycle.
+Acceptance: the reference's prestage.py:185-205 at the commit above.
+Departures: count and candidates are required keywords; candidates use the calendar's own
+window through prior_sessions; count is validated first, and refusals are ValueError.
 Bar, minute/second units, Segment, BaselineValue and the New York zone come from this
 package. No session count or authority default is supplied. No request is made, no
 stream starts and no order is placed.
@@ -28,7 +32,8 @@ from hashlib import sha256
 from statistics import median
 
 from sextant_movers.ranking.bars import MINUTE_NS, Bar
-from sextant_movers.ranking.baseline import NS, BaselineValue, Segment
+from sextant_movers.ranking.baseline import NS, BaselineValue, Segment, segment_start
+from sextant_movers.ranking.references import prior_sessions
 from sextant_movers.sessions import ET
 
 SCALE = 10_000
@@ -41,6 +46,33 @@ def _session_start(day: date, segment: Segment) -> int:
     value = datetime.combine(day, local.timetz())
     delta = value.astimezone(UTC) - _EPOCH
     return (delta.days * 86400 + delta.seconds) * NS + delta.microseconds * 1000
+
+
+def baseline_sessions(
+    day: date, segment: Segment, *, count: int, candidates: int
+) -> tuple[date, ...]:
+    """Prior sessions whose start did not move and whose span covers this prefix."""
+    if type(count) is not int or count < 1:
+        raise ValueError("A prior-session count is at least 1")
+    prior = prior_sessions(day, count=candidates)
+    expected_span = segment.end_ns - segment.start_ns
+    chosen: list[date] = []
+    for candidate in reversed(prior):
+        anchored = _session_start(candidate, segment)
+        found, _, _ = segment_start(anchored + NS)
+        if (
+            found is None
+            or found.name != segment.name
+            or found.start_ns != anchored
+            or found.end_ns - anchored < expected_span
+        ):
+            continue
+        chosen.append(candidate)
+        if len(chosen) == count:
+            break
+    if len(chosen) < count:
+        raise ValueError(f"fewer than {count} usable prior {segment.name} sessions")
+    return tuple(sorted(chosen))
 
 
 class SessionCurves:

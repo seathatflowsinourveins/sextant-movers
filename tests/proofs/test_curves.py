@@ -616,3 +616,323 @@ def test_seeded_parity_with_the_reference_in_a_child_interpreter() -> None:
         f"parity: {len(cases)} builds, {arrays} arrays, {queries} queries; "
         f"streamed {theirs['streamed']}; digest {answer_digest(theirs['answers'])}"
     )
+
+
+# Session choice: the caller supplies both counts; dates come from the pinned calendar.
+def choice(day: date, scope: Segment, **kw: Any) -> tuple[date, ...]:
+    choose: Any = curves.baseline_sessions
+    return choose(day, scope, **kw)
+
+
+def calendar_choice() -> Any:
+    from exchange_calendars import get_calendar
+
+    return get_calendar("XNYS")
+
+
+def actual_segment(day: date, hour: int, minute: int = 0) -> Segment:
+    from sextant_movers.ranking.baseline import segment_start
+
+    found = segment_start(
+        nanos(
+            datetime.combine(day, datetime.min.time(), ET).replace(
+                hour=hour, minute=minute, second=1
+            )
+        )
+    )[0]
+    assert found is not None
+    return found
+
+
+def early_and_next() -> tuple[date, date]:
+    cal = calendar_choice()
+    early = next(d.date() for d in reversed(cal.early_closes) if d.year == 2026 and d.month == 11)
+    following = cal.sessions[cal.sessions.get_loc(str(early)) + 1].date()
+    return early, following
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.0, "1", None])
+def test_session_choice_count_refused_first_with_exact_text(count: Any) -> None:
+    with pytest.raises(ValueError) as error:
+        choice(DAY, segment(), count=count, candidates=0)
+    assert str(error.value) == "A prior-session count is at least 1"
+
+
+@pytest.mark.parametrize("candidates", [0, -1, True, "1"])
+def test_session_choice_candidates_checked_by_prior_sessions(candidates: Any) -> None:
+    with pytest.raises(ValueError) as error:
+        choice(DAY, segment(), count=1, candidates=candidates)
+    assert str(error.value) == "A prior-session count is at least 1"
+
+
+@pytest.mark.parametrize("kw", [{}, {"count": 1}, {"candidates": 1}])
+def test_session_choice_requires_both_keywords(kw: Any) -> None:
+    with pytest.raises(TypeError):
+        choice(DAY, segment(), **kw)
+
+
+def test_session_choice_newest_usable_oldest_first_and_candidate_edges() -> None:
+    from sextant_movers.ranking.references import prior_sessions
+
+    early, day = early_and_next()
+    pre = actual_segment(day, 4)
+    expected = prior_sessions(day, count=3)
+    assert expected[-1] == early
+    assert choice(day, pre, count=3, candidates=3) == expected
+    assert choice(day, pre, count=3, candidates=8) == expected
+    with pytest.raises(ValueError) as error:
+        choice(day, pre, count=3, candidates=2)
+    assert str(error.value) == "fewer than 3 usable prior PRE sessions"
+    assert (day - early).days > 1  # weekend; the calendar also skips the intervening holiday.
+    assert (early - expected[-2]).days > 1
+
+
+@pytest.mark.parametrize("hour,minute", [(9, 30), (16, 0)])
+def test_session_choice_skips_early_close_for_full_rth_and_1600_post(hour, minute) -> None:
+    from sextant_movers.ranking.references import prior_sessions
+
+    early, day = early_and_next()
+    scope = actual_segment(day, hour, minute)
+    prior = prior_sessions(day, count=4)
+    assert choice(day, scope, count=3, candidates=4) == prior[:-1]
+    assert early not in choice(day, scope, count=3, candidates=4)
+    with pytest.raises(ValueError) as error:
+        choice(day, scope, count=3, candidates=3)
+    assert str(error.value) == f"fewer than 3 usable prior {scope.name} sessions"
+
+
+def test_session_choice_on_early_day_short_rth_and_1300_post() -> None:
+    from sextant_movers.ranking.references import prior_sessions
+
+    early, _ = early_and_next()
+    rth, post = actual_segment(early, 9, 30), actual_segment(early, 13)
+    assert (rth.end_ns - rth.start_ns) // NS == 210 * 60
+    assert choice(early, rth, count=3, candidates=3) == prior_sessions(early, count=3)
+    with pytest.raises(ValueError) as error:
+        choice(early, post, count=1, candidates=15)
+    assert str(error.value) == "fewer than 1 usable prior POST sessions"
+    previous = max(d.date() for d in calendar_choice().early_closes if d.date() < early)
+    window = len(calendar_choice().sessions_in_range(str(previous), str(early))) - 1
+    assert choice(early, post, count=1, candidates=window) == (previous,)
+
+
+def test_session_choice_weeks_after_both_dst_changes() -> None:
+    from itertools import pairwise
+
+    from sextant_movers.ranking.references import prior_sessions
+
+    sessions = [s.date() for s in calendar_choice().sessions if s.year == 2026]
+    changes = [
+        b
+        for a, b in pairwise(sessions)
+        if datetime.combine(a, datetime.min.time(), ET).utcoffset()
+        != datetime.combine(b, datetime.min.time(), ET).utcoffset()
+    ]
+    assert len(changes) == 2
+    for first in changes:
+        for day in sessions[sessions.index(first) : sessions.index(first) + 5]:
+            for hour, minute in ((4, 0), (9, 30), (16, 0)):
+                scope = actual_segment(day, hour, minute)
+                assert choice(day, scope, count=3, candidates=3) == prior_sessions(day, count=3)
+
+
+def test_session_choice_overnight_is_not_rejected_by_name() -> None:
+    from sextant_movers.ranking.baseline import segment_start
+
+    _, day = early_and_next()
+    scope = segment_start(nanos(datetime.combine(day, datetime.min.time(), ET)))[0]
+    assert scope is not None and scope.name == "OVERNIGHT"
+    result = choice(day, scope, count=2, candidates=12)
+    assert len(result) == 2 and result == tuple(sorted(result))
+    assert all(actual_segment(d, 20).name == "OVERNIGHT" for d in result)
+
+
+def test_session_choice_checks_probe_name_exact_anchor_and_span(monkeypatch) -> None:
+    days = tuple(DAY + timedelta(days=i) for i in range(6))
+    scope = segment()
+    monkeypatch.setattr(curves, "prior_sessions", lambda day, *, count: days)
+    probes = []
+
+    def find(probe):
+        probes.append(probe)
+        day = datetime.fromtimestamp(probe // NS, ET).date()
+        anchor = curves._session_start(day, scope)
+        found = Segment("PRE", day, anchor, anchor + scope.end_ns - scope.start_ns, "zz")
+        index = days.index(day)
+        if index == 5:
+            found = None
+        elif index == 4:
+            found = replace(found, name="POST")
+        elif index == 3:
+            found = replace(found, start_ns=anchor - NS)
+        elif index == 2:
+            found = replace(found, end_ns=found.end_ns - NS)
+        return found, day, anchor
+
+    monkeypatch.setattr(curves, "segment_start", find)
+    assert choice(DAY, scope, count=2, candidates=6) == days[:2]
+    assert probes == [curves._session_start(d, scope) + NS for d in reversed(days)]
+
+
+@pytest.mark.parametrize("count", [0, -1, True, 1.0, "1", None])
+def test_session_choice_refuses_count_before_any_calendar_read(monkeypatch, count: Any) -> None:
+    def never(day, *, count):
+        raise AssertionError("the calendar was read before the count was checked")
+
+    monkeypatch.setattr(curves, "prior_sessions", never)
+    with pytest.raises(ValueError) as error:
+        choice(DAY, segment(), count=count, candidates=3)
+    assert str(error.value) == "A prior-session count is at least 1"
+
+
+def test_session_choice_span_and_anchor_are_exact_to_the_nanosecond(monkeypatch) -> None:
+    days = tuple(DAY + timedelta(days=i) for i in range(4))
+    scope = segment()
+    span = scope.end_ns - scope.start_ns
+    monkeypatch.setattr(curves, "prior_sessions", lambda day, *, count: days)
+
+    def find(probe):
+        day = datetime.fromtimestamp(probe // NS, ET).date()
+        anchor = curves._session_start(day, scope)
+        found = Segment("PRE", day, anchor, anchor + span, "zz")
+        index = days.index(day)
+        if index == 3:
+            found = replace(found, end_ns=found.end_ns - 1)
+        elif index == 2:
+            found = replace(found, start_ns=anchor + 1)
+        elif index == 1:
+            found = replace(found, start_ns=anchor - 1)
+        return found, day, anchor
+
+    monkeypatch.setattr(curves, "segment_start", find)
+    assert choice(DAY, scope, count=1, candidates=4) == days[:1]
+    with pytest.raises(ValueError) as error:
+        choice(DAY, scope, count=2, candidates=4)
+    assert str(error.value) == "fewer than 2 usable prior PRE sessions"
+
+
+# A complete passing prefix ends above this seeded session-choice extension.
+def session_choice_cases() -> list[list[Any]]:
+    import random
+    from itertools import pairwise
+
+    rng = random.Random(20261113)  # noqa: S311 - synthetic instants
+    cal = calendar_choice()
+    low, high = date(2023, 1, 1), date(2027, 6, 30)
+    days = set()
+    for early in cal.early_closes:
+        if low <= early.date() <= high:
+            index = cal.sessions.get_loc(early)
+            days.update(s.date() for s in cal.sessions[index : index + 6] if s.date() <= high)
+    sessions = [s.date() for s in cal.sessions if low <= s.date() <= high]
+    for a, b in pairwise(sessions):
+        if (
+            datetime.combine(a, datetime.min.time(), ET).utcoffset()
+            != datetime.combine(b, datetime.min.time(), ET).utcoffset()
+        ):
+            index = sessions.index(b)
+            days.update(sessions[index : index + 5])
+    cases = []
+    for day in sorted(days):
+        for hour, minute in ((0, 0), (4, 0), (9, 30), (13, 0), (16, 0), (18, 0), (20, 0)):
+            stamp = nanos(
+                datetime.combine(day, datetime.min.time(), ET).replace(
+                    hour=hour, minute=minute, second=1
+                )
+            )
+            cases.append([stamp, rng.randint(1, 8)])
+    for _ in range(480):
+        day = low + timedelta(days=rng.randint(0, (high - low).days))
+        stamp = nanos(
+            datetime.combine(day, datetime.min.time(), ET)
+            + timedelta(seconds=rng.randint(0, 86399))
+        )
+        cases.append([stamp, rng.randint(1, 8)])
+    return cases
+
+
+def session_choice_answer(find: Any, choose: Any, case: list[Any]) -> list[Any]:
+    scope, day, start = find(case[0])
+    if scope is None:
+        return ["closed", str(day), start]
+    prefix = [scope.name, scope.start_ns, scope.end_ns]
+    try:
+        dates = choose(day, scope, count=case[1])
+        return [*prefix, "answered", [str(d) for d in dates]]
+    except ValueError as error:
+        return [*prefix, "refused", "ValueError", str(error)]
+
+
+def session_choice_answers(cases: list[list[Any]]) -> list[list[Any]]:
+    from sextant_movers.ranking.baseline import segment_start
+
+    def choose(day, scope, *, count):
+        return curves.baseline_sessions(day, scope, count=count, candidates=count + 10)
+
+    return [session_choice_answer(segment_start, choose, case) for case in cases]
+
+
+def test_seeded_session_choice_digest() -> None:
+    cases = session_choice_cases()
+    answers = session_choice_answers(cases)
+    assert len(cases) >= 400
+    assert {a[0] for a in answers} == {"PRE", "RTH", "POST", "OVERNIGHT", "closed"}
+    assert (
+        answer_digest(answers) == "306ee02397804001ca9d395256fa97fb48fbd28220d7d7fe8d8160a4fc6c478d"
+    )
+
+
+SESSION_CHOICE_CHILD = r"""
+import hashlib, json, os, platform, sys
+from pathlib import Path
+from typing import Any
+import exchange_calendars
+src = Path(os.environ["MOVERS_REFERENCE_SRC"])
+pins = {
+    "tradingview/prestage.py": "e3345d330725a4ad12d6e517ae74c592d3633ffe",
+    "tradingview/baseline.py": "33ae6220ed6ecda61709ed4c6b4847ad73f7e41e",
+    "ranking/baseline.py": "3da751ea1d2650819ac467abfb53eb8bd8b05dab",
+}
+for name, expected in pins.items():
+    blob = (src / "sextant" / name).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected
+payload = json.load(sys.stdin)
+versions = [platform.python_version(), exchange_calendars.__version__]
+assert versions == payload["versions"], "Runtime versions differ; stop parity"
+sys.path.insert(0, str(src))
+from sextant.ranking.baseline import segment_start
+from sextant.tradingview.prestage import baseline_sessions
+answers = [session_choice_answer(segment_start, baseline_sessions, c) for c in payload["cases"]]
+print("PARITY " + json.dumps({"versions": versions, "answers": answers}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_session_choice_matches_reference() -> None:
+    import inspect
+    import platform
+
+    import exchange_calendars
+    import reference_child
+
+    src, python = reference_child.reference()
+    cases = session_choice_cases()
+    versions = [platform.python_version(), exchange_calendars.__version__]
+    script = (
+        "from __future__ import annotations\n"
+        + inspect.getsource(session_choice_answer)
+        + SESSION_CHOICE_CHILD
+    )
+    theirs = reference_child.run(
+        python, src, script, stdin=json.dumps({"versions": versions, "cases": cases})
+    )
+    assert theirs["versions"] == versions, "Runtime versions differ; stop parity"
+    ours = session_choice_answers(cases)
+    assert theirs["answers"] == ours
+    closed = sum(a[0] == "closed" for a in ours)
+    refused = sum(a[-3:-1] == ["refused", "ValueError"] for a in ours)
+    print(
+        f"session choice: cases={len(cases)} answered={len(cases) - closed - refused} "
+        f"refused={refused} closed={closed}; Python={versions[0]} "
+        f"exchange_calendars={versions[1]} both sides; digest={answer_digest(ours)}"
+    )
