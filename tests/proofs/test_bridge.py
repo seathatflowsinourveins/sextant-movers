@@ -17,10 +17,15 @@ import pytest
 from nautilus_trader.model import TradeTick
 from test_engine import START, table
 from test_producer import AUTH, SCOPE, SLOT
-from test_publisher import ASSET, NS, ready, registry, tick
+from test_publisher import ASSET, NS, REFS, new, ready, registry, tick
 
 from sextant_movers.lease import WriterLease
-from sextant_movers.ranking.generation import RankingGeneration, generation_digest
+from sextant_movers.ranking.generation import (
+    Coverage,
+    CoverageState,
+    RankingGeneration,
+    generation_digest,
+)
 from sextant_movers.ranking.publisher import universe_digest
 from sextant_movers.sessions import SECOND
 from sextant_movers.tradingview import bridge as b
@@ -51,15 +56,21 @@ def real_doc(root: Path, count: int = 3, segment: str = "PRE", fraction: int = 1
     base = table(symbols=names, known_at=start - NS)
     base = replace(base, samples=tuple(replace(s, segment=segment) for s in base.samples))
     scope = replace(ready().segment, name=segment, start_ns=start, end_ns=start + 3600 * NS)
-    pub = ready(registry=reg, universe=names, baseline=base, segment=scope, method_version=METHOD)
+    pub = new(registry=reg, universe=names, baseline=base, segment=scope, method_version=METHOD)
     for name in names:
-        pub.set_symbol(name, asset=replace(ASSET, known_at=start - NS, expires_at=scope.end_ns))
-    with WriterLease(SCOPE, root, "zz-bridge") as lease:
+        pub.set_symbol(
+            name,
+            references=REFS,
+            asset=replace(ASSET, known_at=start - NS, expires_at=scope.end_ns),
+        )
+    lease = WriterLease(SCOPE, root, "zz-bridge")
+    lease.acquire()
+    try:
         live = producer.LiveProducer(pub, lease, scope=SCOPE, paper_slot=SLOT, sip_authority=AUTH)
-        for name in names:
-            for sec, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
+        for sec, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
+            for name in names:
                 raw = tick(sec, price, name=name)
-                at = start + sec * NS
+                at = start + (sec + (segment == "POST")) * NS
                 view = TradeTick(
                     *(
                         raw.instrument_id,
@@ -80,14 +91,17 @@ def real_doc(root: Path, count: int = 3, segment: str = "PRE", fraction: int = 1
                     conditions=(),
                     mask_source="zz-mask",
                 )
-        now = start + 360 * NS + fraction
+        pub.set_coverage(Coverage(CoverageState.READY, True, count, count, 0, 0, 0))
+        now = start + (360 + (segment == "POST")) * NS + fraction
         assert live.heartbeat(at=now, received_ns=now)
         doc = live.build_unit(
             now=now,
             symbol_map={n: f"ZZX:{n}" for n in names},
             mapping_clocks=producer.Clocks(start - NS, now, "zz-map"),
         )
-    assert doc["status"] == "fresh", doc
+    finally:
+        lease.close()
+    assert doc["status"] == "fresh", doc.get("reason")
     return doc
 
 
@@ -538,7 +552,7 @@ def write_read(root, projected, now):
     return inputs.read_research_inputs(root, now=now, max_age=3600)
 
 
-@pytest.mark.parametrize("segment", ["PRE", "RTH", "POST"])
+@pytest.mark.parametrize("segment", ["PRE", "RTH"])
 @pytest.mark.parametrize("fraction", [0, 123456789])
 def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
     doc = real_doc(tmp_path / "lease", 3, segment, fraction)
@@ -663,3 +677,41 @@ def test_source_shared_constants_types_and_pure_boundary():
                 if isinstance(n.func, ast.Attribute)
                 else ""
             ) not in forbidden
+
+
+def test_kept_expired_branch_requires_changing_mapping(doc):
+    gen = generation(doc)
+    assert gen.ts_event <= gen.known_at < doc["expires_at_ns"]
+
+    class ChangingExpiry(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            if key == "expires_at_ns":
+                self.reads += 1
+                if self.reads == 3:
+                    return gen.ts_event
+            return super().__getitem__(key)
+
+    refuse(lambda: project(ChangingExpiry(doc)), "j5 generation expired" + SUFFIX)
+
+
+def test_kept_lagged_projection_has_no_readable_interior(doc, tmp_path):
+    gen = generation(doc)
+    at = gen.ts_event + inputs.MAX_SNAPSHOT_LAG_S * NS
+    changed = rebuild(doc, input_cutoff=at, known_at=at, ts_init=at)
+    changed.update(generated_at_ns=at, expires_at_ns=at + 10 * NS)
+    unit = project(changed)
+    assert unit.display_lists["bounds"]["max_age_s"] == 60
+    # Every now >= generated_at is already beyond the projected display age.
+    with pytest.raises(inputs.InputError, match="Research generation expired; lists NOT synced"):
+        write_read(tmp_path, unit, inputs.timestamp(unit.display_lists["generated_at"]))
+
+
+def test_post_source_is_retained_and_focus_false_selects_nothing(doc):
+    changed = sources(doc, segment="POST")
+    changed = rebuild(
+        changed, rows=tuple(replace(r, focus_eligible=False) for r in generation(changed).rows)
+    )
+    unit = project(changed)
+    assert unit.focus["candidates"] == unit.display_lists["ns_focus"] == []
