@@ -151,6 +151,8 @@ def test_text_sync_order_uses_the_existing_json_witness(
     import sys
 
     monkeypatch.setattr(
-        sys.modules[__name__], "write_atomic", lambda path, value: atomic.write_atomic_text(path, "é")
+        sys.modules[__name__],
+        "write_atomic",
+        lambda path, value: atomic.write_atomic_text(path, "é"),
     )
     test_the_file_then_the_directory_are_synced_around_the_replace(tmp_path, monkeypatch)
