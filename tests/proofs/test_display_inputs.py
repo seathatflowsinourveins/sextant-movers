@@ -6,7 +6,7 @@ import ast
 import copy
 import inspect
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -15,7 +15,7 @@ import pytest
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from pandas import Timestamp
 
-from sextant_movers.sessions import ET
+from sextant_movers.sessions import ET, OVERNIGHT_START
 from sextant_movers.tradingview import inputs as reader
 
 FILES = ("top100.json", "focus.json", "display-lists.json")
@@ -123,6 +123,76 @@ def test_good_memberships_generation_unmapped_and_microsecond_expiry(tmp_path: P
     )
     with pytest.raises(TypeError):
         reader.read_research_inputs(tmp_path, now=NOW)  # type: ignore[call-arg]
+
+
+def test_source_uses_named_session_bounds_without_time_calls() -> None:
+    tree = ast.parse(Path(reader.__file__).read_text())
+    assert not any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "time")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "time"
+                and (node.args or node.keywords)
+            )
+        )
+        for node in ast.walk(tree)
+    )
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [(20, 30, ("2026-11-11", False)), (4, 30, ("2026-11-11", True))],
+)
+def test_session_follows_imported_bounds(monkeypatch, hour, minute, expected) -> None:
+    monkeypatch.setattr(reader, "OVERNIGHT_START", time(21), raising=False)
+    monkeypatch.setattr(reader, "PRE_START", time(5), raising=False)
+    assert reader._session(datetime(2026, 11, 11, hour, minute, tzinfo=ET)) == expected
+
+
+def test_source_reads_text_as_utf8() -> None:
+    tree = ast.parse(Path(reader.__file__).read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "read_text"
+    ]
+    assert calls
+    assert all(
+        any(
+            keyword.arg == "encoding"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "utf-8"
+            for keyword in call.keywords
+        )
+        for call in calls
+    )
+
+
+def test_utf8_display_labels_are_accepted_and_returned_unchanged(tmp_path: Path) -> None:
+    docs = documents()
+    display = docs[FILES[2]]
+    display["ns_movers"][0]["labels"] = ["zz-caf\u00e9-\u96ea"]
+    write_unit(tmp_path, docs)
+    target = tmp_path / FILES[2]
+    target.write_bytes(json.dumps(display, ensure_ascii=False).encode("utf-8"))
+    assert reader._read(target) == display
+    assert reader.read_research_inputs(tmp_path, now=NOW, max_age=1200).memberships[
+        "NS movers"
+    ] == {"ZZX:ZZAAA", "ZZX:ZZAAB"}
+
+
+def test_non_utf8_display_label_refuses_as_invalid_unit(tmp_path: Path) -> None:
+    write_unit(tmp_path, documents())
+    target = tmp_path / FILES[2]
+    target.write_bytes(target.read_bytes().replace(b"zz-synthetic", b"zz-\xff", 1))
+    with pytest.raises(
+        reader.InputError, match="Missing or invalid research unit; lists NOT synced"
+    ):
+        reader.read_research_inputs(tmp_path, now=NOW, max_age=1200)
 
 
 @pytest.mark.parametrize("damage", ["missing", "broken", [], None, 2, "zz-json"])
@@ -600,7 +670,10 @@ def seeded_units() -> list[dict[str, Any]]:
             ]
         )
         at = datetime.fromisoformat(clock)
-        day = at.astimezone(ET).date().isoformat()
+        local = at.astimezone(ET)
+        day = (
+            local.date() + timedelta(days=1) if local.time() >= OVERNIGHT_START else local.date()
+        ).isoformat()
         rows = [member(i) for i in range(rng.randint(1, 12))]
         focus = rows[: rng.randint(0, len(rows))]
         docs = documents(
@@ -720,7 +793,7 @@ def clock_answers(m: Any) -> list[int]:
     ]
 
 
-UNIT_DIGEST = "be527bd1f2c610c2f6e234137b09f3f6ff6c01233bf129682537f88fcf3f41bf"
+UNIT_DIGEST = "e25baa71e9b2b24ea095088c76979910eccc00f5e0ecfc88f35076a50586b59d"
 
 
 def test_seeded_unit_answers_are_pinned() -> None:
@@ -732,6 +805,17 @@ def test_seeded_unit_answers_are_pinned() -> None:
     assert {answer[0] for answer in answers} == {"accepted", "refused"}
     payload = json.dumps([answers, clock_answers(reader)], sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(payload.encode()).hexdigest() == UNIT_DIGEST
+
+
+def test_seeded_overnight_units_are_accepted_and_refused() -> None:
+    units = [
+        unit
+        for unit in seeded_units()
+        if datetime.fromisoformat(unit["nows"][0]).astimezone(ET).time() >= OVERNIGHT_START
+    ]
+    assert units
+    answers = unit_answers(reader, units)
+    assert {answer[0] for answer in answers} == {"accepted", "refused"}
 
 
 UNIT_PARITY = """
