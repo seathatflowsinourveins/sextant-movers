@@ -24,6 +24,13 @@ TradingView is the owner's main display of the rank, charts and notifications. I
 - There is no official unrestricted way to push a ranked order into TradingView; the lists carry membership only.
 - The sync is a risk path: its PRs take the extra API review, and a review of the meter, the latch or the sign-in runs at max effort.
 
+## Amendment, 2026-11-11: the terms were read
+TradingView's Terms of Use (Sections 3, 12 and 27, "MCP Server") and the server's documentation were read on TradingView's own pages that day; the quotes and links are in [the landscape](../landscape.md), row "TradingView list sync (official surface)". No page shows a date or a version.
+- **Confirmed:** decisions 1 and 2. OAuth 2.1, Essential and above, about 100 requests a minute per user, 1,000 symbols a list, and nothing obtained through the server may be used for automated trading. The 30-symbol list on Basic was on no page read: not verified.
+- **New, binding on part 7:** use is by an individual, personal and non-commercial, through AI Clients the account holder personally uses; no systematic retrieval, caching or storing of data through the server, and no more data than the request at hand needs; no circumventing of a usage or rate limit; never a client other people can use or instruct. The sync therefore reads only what its own read-back needs and stores no TradingView data.
+- **Open, the owner's:** whether an unattended, scheduled sync program is a client the account holder "personally" uses is not answered by the text. It is decided with the owner's sign-in consent (decision 5). Until then part 7 is built and proved against a fake server only, and the import file (decision 6) is the path that needs no consent.
+- **Advanced Charts:** its library "is not redistributable" and may not be used in a public repository; the rejection stands.
+
 ## Revisit when
 - TradingView changes its MCP terms, entitlement, rate, tools or OAuth contract, or the SDK or chart pin moves: amend before the next sync. Owner: the lead.
 - A measured 429 or list cap arrives: decide the fallback list. Owner: the lead.
