@@ -3,6 +3,9 @@
 Sources: docs/manifest.md, "Shelf install step and its session-start check". A stub
 `claude` records each call in a repository and linked worktree made under `tmp_path`;
 it proves only our argument list, and the real run is in the PR.
+The three check-ignore proofs load the script as a module instead (`_shelf`), with its
+`main_checkout` and `rows` stubbed, and run the real git: they pin the refusal's wording
+for git's exit 1, its exit 128 and a git binary that does not start.
 """
 
 from __future__ import annotations

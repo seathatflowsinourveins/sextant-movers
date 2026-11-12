@@ -112,7 +112,7 @@ def test_ci_runs_the_complete_check_without_repository_secrets() -> None:
 
 def _setup_uv_steps() -> dict[str, list[tuple[str, dict]]]:
     found: dict[str, list[tuple[str, dict]]] = {}
-    for path in sorted(WORKFLOWS.glob("*.yml")):
+    for path in sorted((*WORKFLOWS.glob("*.yml"), *WORKFLOWS.glob("*.yaml"))):
         for name, job in yaml.safe_load(path.read_text())["jobs"].items():
             for step in job["steps"]:
                 if step.get("uses", "").startswith("astral-sh/setup-uv@"):
