@@ -12,7 +12,6 @@ import ast
 import hashlib
 import inspect
 import json
-import os
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, replace
@@ -23,6 +22,7 @@ from typing import Any
 
 import nautilus_trader.model as nt
 import pytest
+import reference_child as child
 from test_engine import NS, POST, SCOPE, START, quote, registry, step, table, tick
 from test_heartbeat import GOOD
 
@@ -564,23 +564,15 @@ print("PARITY " + json.dumps({
     "answers": intake_answers(m, nt),
 }))
 """
-PARITY_NEEDS = "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof"
 
 
 @pytest.mark.local
 def test_intake_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip(PARITY_NEEDS)
+    src, python = child.reference()
     script = "from typing import Any\n" + inspect.getsource(intake_answers) + PARITY
-    env = {"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)}
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", script], env=env, capture_output=True, text=True, timeout=600
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script)
     here = [list(sys.version_info[:3]), sys.modules["nautilus_trader"].__version__]
+    assert here == theirs["versions"]
     steps = sum(len(run) for run in theirs["answers"]["runs"])
     print(f"\npython, engine: here {here}, reference {theirs['versions']}")
     counts = [len(theirs["answers"][k]) for k in ("eligible", "constructed", "runs")]

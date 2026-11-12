@@ -15,7 +15,6 @@ import ast
 import hashlib
 import inspect
 import json
-import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import reference_child as child
 from test_registry import swap
 
 from sextant_movers.ranking import generation as gen
@@ -435,29 +435,15 @@ print("PARITY " + json.dumps({
     "answers": answer_all(heartbeat, publisher, generation, registry),
 }))
 """
-PARITY_NEEDS = (
-    "set MOVERS_REFERENCE_SRC and MOVERS_REFERENCE_PYTHON to run the parity proof; the second "
-    "names the reference's own interpreter because its modules import the engine at their top"
-)
 
 
 @pytest.mark.local
 def test_heartbeat_parity_with_the_reference_in_a_child_interpreter() -> None:
-    src, python = os.environ.get("MOVERS_REFERENCE_SRC"), os.environ.get("MOVERS_REFERENCE_PYTHON")
-    if not src or not python:
-        pytest.skip(PARITY_NEEDS)
+    src, python = child.reference()
     script = PRELUDE + inspect.getsource(made) + inspect.getsource(answer_all) + PARITY
-    done = subprocess.run(
-        [python, "-I", "-B", "-c", script],
-        env={"MOVERS_REFERENCE_SRC": src, "PATH": os.environ.get("PATH", os.defpath)},
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert done.returncode == 0, done.stderr[-2000:]
-    line = next(x for x in done.stdout.splitlines() if x.startswith("PARITY "))
-    theirs = json.loads(line.removeprefix("PARITY "))
+    theirs = child.run(python, src, script)
     here = [list(sys.version_info[:3]), sys.modules["nautilus_trader"].__version__]
+    assert here == theirs["versions"]
     steps = sum(len(run["steps"]) for run in theirs["answers"]["emitter"])
     print(f"python, engine: here {here}, reference {theirs['versions']}")
     print(
