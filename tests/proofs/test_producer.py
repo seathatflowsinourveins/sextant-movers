@@ -717,3 +717,492 @@ def test_reader_unavailability_reason_survives_projection(factory, monkeypatch, 
         field = "known_at" if reason == "generation_stale" else "ts_event"
         live.reader.generation = replace(live.reader.generation, **{field: NOW - 3 * NS})
     assert unit(live)["reason"] == reason
+
+
+# Cut B: seeded replay; only the local child's process imports the reference.
+def producer_inputs() -> dict[str, Any]:
+    import random
+
+    template = filled(reg=REG)
+    rng = random.Random(20261116)  # noqa: S311 - reproducible synthetic input
+    start, runs = SEG.start_ns, []
+    damage_names = (
+        "mask",
+        "price_flag",
+        "volume_flag",
+        "condition_list",
+        "empty_condition",
+        "nontext_condition",
+        "event_future",
+        "market_regression",
+        "snapshot_empty",
+        "snapshot_nan",
+        "snapshot_foreign",
+        "snapshot_regression",
+        "universe",
+        "released",
+        "invalidate",
+    )
+    damage_cycle = []
+    for seed in range(64):
+        if seed % len(damage_names) == 0:
+            damage_cycle = rng.sample(damage_names, len(damage_names))
+        steps = []
+
+        def add(call: str, *, steps: list = steps, **kw: Any) -> None:
+            steps.append({"call": call, **kw})
+
+        def trade(second: int, name: str, **kw: Any) -> None:
+            at = start + second * NS
+            add(
+                "on_trade",
+                name=name,
+                event=at,
+                market=at,
+                acquired=at + 80 * NS,
+                now=at,
+                price="2.60"
+                if second >= 360
+                else "2.40"
+                if second >= 300
+                else "2.10"
+                if second >= 60
+                else "2.00",
+                price_eligible=True,
+                volume_eligible=True,
+                conditions=[],
+                mask_source="zz-mask",
+                **kw,
+            )
+
+        # The reader's filled helper supplies the template; replay warms both native publishers
+        # through their producers so admission, clocks and the resulting entire documents count.
+        for second in (0, 60, 300, 360):
+            for name in NAMES:
+                trade(second, name)
+        second = 360
+        damage = damage_cycle[seed % len(damage_names)]
+        damage_round = rng.randint(5, 12)
+        for index in range(16):
+            second += rng.choice((0, 1, 1, 2))
+            at = start + second * NS
+            # Mapping failures do not poison trade intake, unlike refused trades/snapshots.
+            mapping = dict(MEMBERS)
+            kind = rng.choice(("good", "good", "good", "missing", "alias", "bare", "refused"))
+            if kind == "missing":
+                mapping.pop(rng.choice(NAMES))
+            elif kind == "alias":
+                mapping[NAMES[0]] = mapping[NAMES[1]]
+            elif kind == "bare":
+                mapping[rng.choice(NAMES)] = "ZZBARE"
+            elif kind == "refused":
+                mapping[rng.choice(NAMES)] = "ALPACA:ZZOTHER"
+            add("heartbeat", at=at, received_ns=at + rng.choice((0, 0, 1)))
+            add(
+                "build_unit",
+                now=at,
+                mapping=mapping,
+                market=at + 1 if index % 7 == 5 else start - NS,
+                acquired=at + 80 * NS,
+            )
+            text = rng.choice(
+                ('{"ZZPBA":{}}', ' {"ZZPBB":{"p":1.23456789123}} ', '{"ZZPBA":{},"ZZPBA":{"v":2}}')
+            )
+            add(
+                "on_snapshot",
+                text=text,
+                market=at + (1 if index % 5 == 4 else 0),
+                acquired=at + 80 * NS,
+                now=at,
+            )
+            trade(second, rng.choice(NAMES))
+            last = steps[-1]
+            last["price_eligible"], last["volume_eligible"] = rng.choice(
+                ((True, True), (True, True), (False, True), (True, False), (False, False))
+            )
+            last["conditions"] = rng.choice(([], [], ["ZZCOND"]))
+            if index == damage_round:
+                if damage == "released":
+                    add("release")
+                elif damage == "invalidate":
+                    add("invalidate", reason="zz-disconnect")
+                elif damage.startswith("snapshot_"):
+                    raw = {
+                        "snapshot_empty": "{}",
+                        "snapshot_nan": '{"ZZPBA":{"p":NaN}}',
+                        "snapshot_foreign": '{"ZZOTHER":{}}',
+                        "snapshot_regression": '{"ZZPBA":{}}',
+                    }[damage]
+                    add(
+                        "on_snapshot",
+                        text=raw,
+                        market=start - NS if damage.endswith("regression") else at,
+                        acquired=at + 80 * NS,
+                        now=at,
+                    )
+                else:
+                    trade(second, "ZZOTHER" if damage == "universe" else NAMES[0])
+                    changes = {
+                        "mask": {"mask_source": ""},
+                        "price_flag": {"price_eligible": 1},
+                        "volume_flag": {"volume_eligible": 0},
+                        "condition_list": {"conditions_list": True},
+                        "empty_condition": {"conditions": [""]},
+                        "nontext_condition": {"conditions": [1]},
+                        "event_future": {"market": at - 1},
+                        "market_regression": {"market": at - 1, "event": at - 1},
+                    }
+                    steps[-1].update(changes.get(damage, {}))
+        # Boundary observations, staleness and lease release after otherwise valid clocks.
+        add("heartbeat", at=SEG.end_ns + 1, received_ns=SEG.end_ns + 1)
+        add(
+            "build_unit",
+            now=SEG.end_ns,
+            mapping=MEMBERS,
+            market=start - NS,
+            acquired=SEG.end_ns + 80 * NS,
+        )
+        runs.append(
+            {
+                "epoch": f"zz-producer-{seed}",
+                "damage": damage,
+                "registry": {
+                    "top_n": rng.choice((1, 2, 3, 7)),
+                    "publish_min_interval_s": rng.choice((1, 2, 4)),
+                    "generation_max_age_s": rng.choice((1, 2, 5)),
+                    "input_max_age_s": rng.choice((1, 2, 5)),
+                    "heartbeat_max_age_s": rng.choice((1, 2, 5)),
+                },
+                "steps": steps,
+            }
+        )
+    return {
+        "method_version": template.method_version,
+        "registry": [
+            [
+                r.name,
+                r.unit,
+                str(r.value),
+                r.source,
+                r.calibration_state,
+                r.last_change.isoformat(),
+                isinstance(r.value, D),
+            ]
+            for r in REG.rows
+        ],
+        "segment": [SEG.name, SEG.session_date.isoformat(), SEG.start_ns, SEG.end_ns, SEG.source],
+        "baseline": {
+            "samples": [
+                [
+                    s.symbol,
+                    s.segment,
+                    s.session,
+                    s.offset_s,
+                    str(s.dollar_volume),
+                    str(s.trade_count),
+                ]
+                for s in template.baseline.samples
+            ],
+            "provenance": template.baseline.provenance,
+            "known_at": template.baseline.known_at,
+            "feed": template.baseline.feed,
+        },
+        "references": {
+            s: [str(r.prior_close), r.known_at, r.source] for s, r in template.references.items()
+        },
+        "assets": {s: asdict(a) for s, a in template.assets.items() if a is not None},
+        "universe": list(template.universe),
+        "universe_source": template.universe_source,
+        "scope": ["alpaca-market-data", "paper-slot-2"],
+        "paper_slot": 2,
+        "authority": AUTH,
+        "runs": runs,
+    }
+
+
+def producer_replay(m: dict[str, Any], inputs: dict[str, Any], root: Path) -> list[Any]:
+    """Shared replay body: compare every return or exception, whole canonical display JSON."""
+    import json
+    from datetime import date
+    from decimal import Decimal
+    from pathlib import Path
+
+    nt = m["nt"]
+    rows = tuple(
+        m["RegistryRow"](
+            n, u, Decimal(v) if decimal else int(v), source, state, date.fromisoformat(day)
+        )
+        for n, u, v, source, state, day, decimal in inputs["registry"]
+    )
+    name, day, start, end, source = inputs["segment"]
+    segment = m["Segment"](name, date.fromisoformat(day), start, end, source)
+    base = inputs["baseline"]
+    baseline = m["BaselineTable"](
+        tuple(
+            m["BaselineSample"](s, g, day, offset, Decimal(v), Decimal(count))
+            for s, g, day, offset, v, count in base["samples"]
+        ),
+        base["provenance"],
+        base["known_at"],
+        base["feed"],
+    )
+    answers = []
+    for index, run in enumerate(inputs["runs"]):
+        reg = m["Registry"](
+            tuple(
+                m["RegistryRow"](
+                    r.name,
+                    r.unit,
+                    run["registry"].get(r.name, r.value),
+                    r.source,
+                    r.calibration_state,
+                    r.last_change,
+                )
+                for r in rows
+            )
+        )
+        pub = m["publisher"](
+            epoch=run["epoch"],
+            feed="sip",
+            segment=segment,
+            registry=reg,
+            universe=tuple(inputs["universe"]),
+            universe_source=inputs["universe_source"],
+            baseline=baseline,
+        )
+        for symbol, (close, known, source) in inputs["references"].items():
+            pub.set_symbol(
+                symbol,
+                references=m["ReferencePrices"](Decimal(close), known, source),
+                asset=m["AssetState"](**inputs["assets"][symbol]),
+            )
+        size = len(inputs["universe"])
+        pub.set_coverage(m["Coverage"](m["CoverageState"].READY, True, size, size, 0, 0, 0))
+        scope = m["scope"](*inputs["scope"])
+        lease = m["WriterLease"](scope, Path(root) / str(index), "zz-producer")
+        lease.acquire()
+        observed = []
+        try:
+            live = m["producer"](
+                pub,
+                lease,
+                scope=scope,
+                paper_slot=inputs["paper_slot"],
+                sip_authority=inputs["authority"],
+            )
+            for step in run["steps"]:
+                call = step["call"]
+                try:
+                    if call == "heartbeat":
+                        result = live.heartbeat(at=step["at"], received_ns=step["received_ns"])
+                    elif call in {"on_trade", "on_snapshot", "build_unit"}:
+                        clocks = m["Clocks"](step["market"], step["acquired"], "zz-clock")
+                        if call == "build_unit":
+                            result = live.build_unit(
+                                now=step["now"], symbol_map=step["mapping"], mapping_clocks=clocks
+                            )
+                            result = json.dumps(result, sort_keys=True, separators=(",", ":"))
+                        elif call == "on_snapshot":
+                            result = live.on_snapshot(step["text"], clocks=clocks, now=step["now"])
+                        else:
+                            iid = nt.InstrumentId.from_str(step["name"] + ".SIM")
+                            tick = nt.TradeTick(
+                                iid,
+                                nt.Price.from_str(step["price"]),
+                                nt.Quantity.from_int(10),
+                                nt.AggressorSide.BUY,
+                                nt.TradeId("zz"),
+                                step["event"],
+                                step["acquired"],
+                            )
+                            conditions = (
+                                step["conditions"]
+                                if step.get("conditions_list")
+                                else tuple(step["conditions"])
+                            )
+                            result = live.on_trade(
+                                tick,
+                                clocks=clocks,
+                                now=step["now"],
+                                price_eligible=step["price_eligible"],
+                                volume_eligible=step["volume_eligible"],
+                                conditions=conditions,
+                                mask_source=step["mask_source"],
+                            )
+                    elif call == "release":
+                        result = lease.close()
+                    else:
+                        assert call == "invalidate"
+                        result = live.invalidate(step["reason"])
+                except Exception as exc:
+                    result = ["raised", type(exc).__name__, str(exc)]
+                observed.append(
+                    [
+                        call,
+                        result,
+                        live.error,
+                        live.reader.reason,
+                        live.heartbeat_deadline,
+                        pub.coverage.state.value,
+                        pub.coverage.complete,
+                    ]
+                )
+        finally:
+            lease.close()
+        answers.append(observed)
+    return answers
+
+
+def producer_answers(tmp_path: Path) -> list[Any]:
+    import nautilus_trader.model as nt
+    from test_publisher import EDGES, TYPES
+
+    from sextant_movers.ranking.baseline import BaselineSample, BaselineTable, Segment
+    from sextant_movers.ranking.engine import ReferencePrices
+    from sextant_movers.ranking.publisher import AssetState, RankingPublisher
+    from sextant_movers.ranking.registry import Registry, RegistryRow
+
+    inputs = producer_inputs()
+    m = {
+        "nt": nt,
+        "Registry": Registry,
+        "RegistryRow": RegistryRow,
+        "Segment": Segment,
+        "BaselineSample": BaselineSample,
+        "BaselineTable": BaselineTable,
+        "ReferencePrices": ReferencePrices,
+        "AssetState": AssetState,
+        "Coverage": Coverage,
+        "CoverageState": CoverageState,
+        "scope": AccountScope,
+        "WriterLease": WriterLease,
+        "Clocks": Clocks,
+        "producer": LiveProducer,
+    }
+    m["publisher"] = lambda **kw: RankingPublisher(
+        send=lambda *args: None,
+        method_version=inputs["method_version"],
+        eligible_security_types=TYPES,
+        price_band_edges=EDGES,
+        **kw,
+    )
+    return producer_replay(m, inputs, tmp_path)
+
+
+def producer_counts(answers: list[Any]) -> dict[str, int]:
+    steps = [s for run in answers for s in run]
+    documents = [json.loads(s[1]) for s in steps if s[0] == "build_unit"]
+    return {
+        "sessions": len(answers),
+        "calls": len(steps),
+        "fresh": sum(d["status"] == "fresh" for d in documents),
+        "unavailable": sum(d["status"] == "unavailable" for d in documents),
+        "raises": sum(isinstance(s[1], list) and s[1][0] == "raised" for s in steps),
+    }
+
+
+PRODUCER_DIGEST = "636612c83a0c9b1c1e11e40651ea7ae04756cc22cde37f087504e0cc2888fc94"
+
+
+def test_seeded_producer_answers_are_pinned(tmp_path):
+    import hashlib
+
+    answers = producer_answers(tmp_path)
+    counts = producer_counts(answers)
+    assert counts["sessions"] >= 60 and counts["calls"] >= 2000
+    assert counts["fresh"] >= 30 and counts["unavailable"] >= 500 and counts["raises"] >= 500
+    inputs = producer_inputs()
+    assert {run["damage"] for run in inputs["runs"]} >= {
+        "condition_list",
+        "empty_condition",
+        "nontext_condition",
+        "market_regression",
+        "snapshot_regression",
+        "snapshot_nan",
+        "released",
+        "invalidate",
+    }
+    excluded = {"G", "U", "Z", "6", "M", "9"}
+    assert all(
+        not excluded.intersection(step.get("conditions", []))
+        for run in inputs["runs"]
+        for step in run["steps"]
+    )
+    assert {s[0] for run in answers for s in run} >= {
+        "on_trade",
+        "on_snapshot",
+        "heartbeat",
+        "build_unit",
+    }
+    digest = hashlib.sha256(json.dumps(answers, sort_keys=True, separators=(",", ":")).encode())
+    print(f"producer answers: {counts}, digest {digest.hexdigest()}")
+    assert digest.hexdigest() == PRODUCER_DIGEST
+
+
+PRODUCER_PARITY = r"""
+import hashlib, json, os, sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
+src = os.environ["MOVERS_REFERENCE_SRC"]
+blobs = {
+    "tradingview/producer.py": "02d58845621c786a1ee706e45f6cf7842cffd43a",
+    "ranking/reader.py": "70cac528ca4ad16af02fde70c75b74126e358cc7",
+    "execution/custody.py": "76d0f8852f233d7b6d9f150b422a6aa08237715e",
+}
+for path, expected in blobs.items():
+    blob = (Path(src) / "sextant" / path).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected, path
+sys.path.insert(0, src)
+import nautilus_trader
+import nautilus_trader.model as nt
+from sextant.tradingview import producer as pr
+from sextant.ranking import baseline as bl, engine as en, publisher as pb, registry as rg
+from sextant.ranking import generation as g, reader as rd
+from sextant.execution import custody as cu
+assert os.path.samefile(pr.__file__, Path(src) / "sextant/tradingview/producer.py")
+inputs = json.loads(sys.stdin.read())
+pb.METHOD = rd.METHOD = inputs["method_version"]
+assert [pr.SCOPE.broker, pr.SCOPE.account] == inputs["scope"]
+assert pr.DISPLAY_PAPER_SLOT == inputs["paper_slot"]
+class Bus:
+    def publish(self, *args, **kw):
+        pass
+
+def producer(pub, lease, *, scope, paper_slot, sip_authority):
+    assert scope == pr.SCOPE and paper_slot == pr.DISPLAY_PAPER_SLOT
+    return pr.LiveProducer(pub, lease, sip_authority=sip_authority)
+
+m = {"nt": nt, "Registry": rg.Registry, "RegistryRow": rg.RegistryRow,
+     "Segment": en.Segment, "BaselineSample": bl.BaselineSample,
+     "BaselineTable": bl.BaselineTable, "ReferencePrices": en.ReferencePrices,
+     "AssetState": pb.AssetState, "Coverage": g.Coverage, "CoverageState": g.CoverageState,
+     "scope": cu.AccountScope, "WriterLease": cu.WriterLease, "Clocks": pr.Clocks,
+     "producer": producer, "publisher": lambda **kw: pb.RankingPublisher(bus=Bus(), **kw)}
+versions = [list(sys.version_info[:3]), nautilus_trader.__version__]
+assert versions == inputs.pop("versions"), "Python/engine version mismatch"
+with TemporaryDirectory() as temporary:
+    answers = producer_replay(m, inputs, Path(temporary))
+print("PARITY " + json.dumps({"versions": versions, "answers": answers}))
+"""
+
+
+@pytest.mark.local
+def test_producer_parity_with_the_reference_in_a_child_interpreter(tmp_path):
+    import inspect
+    import sys
+
+    import nautilus_trader
+    import reference_child as child
+
+    src, python = child.reference()
+    here = [list(sys.version_info[:3]), nautilus_trader.__version__]
+    script = "from typing import Any\nfrom pathlib import Path\n"
+    script += inspect.getsource(producer_replay) + PRODUCER_PARITY
+    theirs = child.run(
+        python, src, script, stdin=json.dumps(producer_inputs() | {"versions": here})
+    )
+    assert here == theirs["versions"], f"version mismatch: {here}, {theirs['versions']}"
+    ours = producer_answers(tmp_path)
+    print(f"\npython, engine: here {here}, reference {theirs['versions']}")
+    print(f"producer parity: {producer_counts(ours)}")
+    assert theirs["answers"] == ours
