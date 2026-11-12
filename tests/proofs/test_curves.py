@@ -624,7 +624,7 @@ def choice(day: date, scope: Segment, **kw: Any) -> tuple[date, ...]:
     return choose(day, scope, **kw)
 
 
-def calendar_choice():
+def calendar_choice() -> Any:
     from exchange_calendars import get_calendar
 
     return get_calendar("XNYS")
@@ -772,3 +772,130 @@ def test_session_choice_checks_probe_name_exact_anchor_and_span(monkeypatch) -> 
     monkeypatch.setattr(curves, "segment_start", find)
     assert choice(DAY, scope, count=2, candidates=6) == days[:2]
     assert probes == [curves._session_start(d, scope) + NS for d in reversed(days)]
+
+
+# A complete passing prefix ends above this seeded session-choice extension.
+def session_choice_cases() -> list[list[Any]]:
+    import random
+    from itertools import pairwise
+
+    rng = random.Random(20261113)  # noqa: S311 - synthetic instants
+    cal = calendar_choice()
+    low, high = date(2023, 1, 1), date(2027, 6, 30)
+    days = set()
+    for early in cal.early_closes:
+        if low <= early.date() <= high:
+            index = cal.sessions.get_loc(early)
+            days.update(s.date() for s in cal.sessions[index : index + 6] if s.date() <= high)
+    sessions = [s.date() for s in cal.sessions if low <= s.date() <= high]
+    for a, b in pairwise(sessions):
+        if (
+            datetime.combine(a, datetime.min.time(), ET).utcoffset()
+            != datetime.combine(b, datetime.min.time(), ET).utcoffset()
+        ):
+            index = sessions.index(b)
+            days.update(sessions[index : index + 5])
+    cases = []
+    for day in sorted(days):
+        for hour, minute in ((0, 0), (4, 0), (9, 30), (13, 0), (16, 0), (18, 0), (20, 0)):
+            stamp = nanos(
+                datetime.combine(day, datetime.min.time(), ET).replace(
+                    hour=hour, minute=minute, second=1
+                )
+            )
+            cases.append([stamp, rng.randint(1, 8)])
+    for _ in range(480):
+        day = low + timedelta(days=rng.randint(0, (high - low).days))
+        stamp = nanos(
+            datetime.combine(day, datetime.min.time(), ET)
+            + timedelta(seconds=rng.randint(0, 86399))
+        )
+        cases.append([stamp, rng.randint(1, 8)])
+    return cases
+
+
+def session_choice_answer(find: Any, choose: Any, case: list[Any]) -> list[Any]:
+    scope, day, start = find(case[0])
+    if scope is None:
+        return ["closed", str(day), start]
+    prefix = [scope.name, scope.start_ns, scope.end_ns]
+    try:
+        dates = choose(day, scope, count=case[1])
+        return [*prefix, "answered", [str(d) for d in dates]]
+    except ValueError as error:
+        return [*prefix, "refused", "ValueError", str(error)]
+
+
+def session_choice_answers(cases: list[list[Any]]) -> list[list[Any]]:
+    from sextant_movers.ranking.baseline import segment_start
+
+    def choose(day, scope, *, count):
+        return curves.baseline_sessions(day, scope, count=count, candidates=count + 10)
+
+    return [session_choice_answer(segment_start, choose, case) for case in cases]
+
+
+def test_seeded_session_choice_digest() -> None:
+    cases = session_choice_cases()
+    answers = session_choice_answers(cases)
+    assert len(cases) >= 400
+    assert {a[0] for a in answers} == {"PRE", "RTH", "POST", "OVERNIGHT", "closed"}
+    assert (
+        answer_digest(answers) == "306ee02397804001ca9d395256fa97fb48fbd28220d7d7fe8d8160a4fc6c478d"
+    )
+
+
+SESSION_CHOICE_CHILD = r"""
+import hashlib, json, os, platform, sys
+from pathlib import Path
+from typing import Any
+import exchange_calendars
+src = Path(os.environ["MOVERS_REFERENCE_SRC"])
+pins = {
+    "tradingview/prestage.py": "e3345d330725a4ad12d6e517ae74c592d3633ffe",
+    "tradingview/baseline.py": "33ae6220ed6ecda61709ed4c6b4847ad73f7e41e",
+    "ranking/baseline.py": "3da751ea1d2650819ac467abfb53eb8bd8b05dab",
+}
+for name, expected in pins.items():
+    blob = (src / "sextant" / name).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected
+payload = json.load(sys.stdin)
+versions = [platform.python_version(), exchange_calendars.__version__]
+assert versions == payload["versions"], "Runtime versions differ; stop parity"
+sys.path.insert(0, str(src))
+from sextant.ranking.baseline import segment_start
+from sextant.tradingview.prestage import baseline_sessions
+answers = [session_choice_answer(segment_start, baseline_sessions, c) for c in payload["cases"]]
+print("PARITY " + json.dumps({"versions": versions, "answers": answers}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_session_choice_matches_reference() -> None:
+    import inspect
+    import platform
+
+    import exchange_calendars
+    import reference_child
+
+    src, python = reference_child.reference()
+    cases = session_choice_cases()
+    versions = [platform.python_version(), exchange_calendars.__version__]
+    script = (
+        "from __future__ import annotations\n"
+        + inspect.getsource(session_choice_answer)
+        + SESSION_CHOICE_CHILD
+    )
+    theirs = reference_child.run(
+        python, src, script, stdin=json.dumps({"versions": versions, "cases": cases})
+    )
+    assert theirs["versions"] == versions, "Runtime versions differ; stop parity"
+    ours = session_choice_answers(cases)
+    assert theirs["answers"] == ours
+    closed = sum(a[0] == "closed" for a in ours)
+    refused = sum(a[-3:-1] == ["refused", "ValueError"] for a in ours)
+    print(
+        f"session choice: cases={len(cases)} answered={len(cases) - closed - refused} "
+        f"refused={refused} closed={closed}; Python={versions[0]} "
+        f"exchange_calendars={versions[1]} both sides; digest={answer_digest(ours)}"
+    )
