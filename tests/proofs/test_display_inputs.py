@@ -6,7 +6,7 @@ import ast
 import copy
 import inspect
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -15,7 +15,7 @@ import pytest
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from pandas import Timestamp
 
-from sextant_movers.sessions import ET
+from sextant_movers.sessions import ET, OVERNIGHT_START
 from sextant_movers.tradingview import inputs as reader
 
 FILES = ("top100.json", "focus.json", "display-lists.json")
@@ -123,6 +123,76 @@ def test_good_memberships_generation_unmapped_and_microsecond_expiry(tmp_path: P
     )
     with pytest.raises(TypeError):
         reader.read_research_inputs(tmp_path, now=NOW)  # type: ignore[call-arg]
+
+
+def test_source_uses_named_session_bounds_without_time_calls() -> None:
+    tree = ast.parse(Path(reader.__file__).read_text())
+    assert not any(
+        isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "time")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "time"
+                and (node.args or node.keywords)
+            )
+        )
+        for node in ast.walk(tree)
+    )
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [(20, 30, ("2026-11-11", False)), (4, 30, ("2026-11-11", True))],
+)
+def test_session_follows_imported_bounds(monkeypatch, hour, minute, expected) -> None:
+    monkeypatch.setattr(reader, "OVERNIGHT_START", time(21), raising=False)
+    monkeypatch.setattr(reader, "PRE_START", time(5), raising=False)
+    assert reader._session(datetime(2026, 11, 11, hour, minute, tzinfo=ET)) == expected
+
+
+def test_source_reads_text_as_utf8() -> None:
+    tree = ast.parse(Path(reader.__file__).read_text())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "read_text"
+    ]
+    assert calls
+    assert all(
+        any(
+            keyword.arg == "encoding"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "utf-8"
+            for keyword in call.keywords
+        )
+        for call in calls
+    )
+
+
+def test_utf8_display_labels_are_accepted_and_returned_unchanged(tmp_path: Path) -> None:
+    docs = documents()
+    display = docs[FILES[2]]
+    display["ns_movers"][0]["labels"] = ["zz-caf\u00e9-\u96ea"]
+    write_unit(tmp_path, docs)
+    target = tmp_path / FILES[2]
+    target.write_bytes(json.dumps(display, ensure_ascii=False).encode("utf-8"))
+    assert reader._read(target) == display
+    assert reader.read_research_inputs(tmp_path, now=NOW, max_age=1200).memberships[
+        "NS movers"
+    ] == {"ZZX:ZZAAA", "ZZX:ZZAAB"}
+
+
+def test_non_utf8_display_label_refuses_as_invalid_unit(tmp_path: Path) -> None:
+    write_unit(tmp_path, documents())
+    target = tmp_path / FILES[2]
+    target.write_bytes(target.read_bytes().replace(b"zz-synthetic", b"zz-\xff", 1))
+    with pytest.raises(
+        reader.InputError, match="Missing or invalid research unit; lists NOT synced"
+    ):
+        reader.read_research_inputs(tmp_path, now=NOW, max_age=1200)
 
 
 @pytest.mark.parametrize("damage", ["missing", "broken", [], None, 2, "zz-json"])
@@ -578,3 +648,222 @@ def test_source_only_pinned_dependencies_no_writes_or_network() -> None:
                     "touch",
                     "replace_file",
                 }
+
+
+def seeded_units() -> list[dict[str, Any]]:
+    import random
+
+    rng = random.Random(6011)  # noqa: S311 - deterministic synthetic units
+    units = []
+    clock_keys = ("as_of_snapshot", "as_of", "generated_at")
+    for index in range(320):
+        clock = rng.choice(
+            [
+                CLOCK,
+                "2026-11-11 15:00:00.000000001+0000",
+                "2026-11-12T01:01:00.999999999Z",
+                "2026-11-14T15:00:00Z",
+                "1600-06-15T14:30:00Z",
+                "2500-06-15T14:30:00Z",
+                "0001-06-15T14:30:00Z",
+                "9999-06-15T14:30:00Z",
+            ]
+        )
+        at = datetime.fromisoformat(clock)
+        local = at.astimezone(ET)
+        day = (
+            local.date() + timedelta(days=1) if local.time() >= OVERNIGHT_START else local.date()
+        ).isoformat()
+        rows = [member(i) for i in range(rng.randint(1, 12))]
+        focus = rows[: rng.randint(0, len(rows))]
+        docs = documents(
+            clocks=dict.fromkeys(clock_keys, clock),
+            movers=rows,
+            focus=focus,
+            bounds={"max_age_s": rng.choice([1, 30, 600, 3600])},
+        )
+        for doc in docs.values():
+            doc["session_date"] = day
+            if "01:01" in clock:
+                doc["ranking_context"] = {
+                    "session": "overnight",
+                    "session_date": day,
+                    "intraday_feed": "boats",
+                    "daily_history_feed": "sip",
+                    "daily_history_scope": (
+                        "prior completed XNYS sessions; not BOATS intraday evidence"
+                    ),
+                }
+        docs = json.loads(json.dumps(docs))
+        target = docs[rng.choice(FILES)]
+        damage = rng.randrange(28)
+        if damage < 3:
+            target[rng.choice(["status", "schema", "snapshot_status"])] = "zz-damaged"
+        elif damage == 3:
+            target["generation"] = {"as_of": clock, "sha256": "c" * 64}
+        elif damage == 4:
+            target["ranking_context"] = {"zz": "different"}
+        elif damage == 5:
+            target["research_inputs"] = {"zz": "different"}
+        elif damage == 6:
+            target["session_date"] = "zz-wrong"
+        elif damage == 7:
+            target[rng.choice(clock_keys)] = "zz-clock"
+        elif damage == 8:
+            docs[FILES[2]]["bounds"]["gap_bound"] = rng.choice([0, -1, "NaN", 0.05])
+        elif damage == 9:
+            docs[FILES[2]]["bounds"]["max_age_s"] = rng.choice([0, True, 1.0])
+        elif damage == 10:
+            docs[FILES[2]]["counts"]["ns_movers"] += 1
+        elif damage == 11:
+            docs[FILES[2]]["ns_movers"][0]["labels"] = rng.choice([[], [""], [True]])
+        elif damage == 12:
+            docs[FILES[2]]["ns_movers"][0]["tradingview_symbol"] = "SMART:" + symbol(0)
+        elif damage == 13:
+            docs[FILES[2]]["ns_focus"] = [member(0, "ZZX_ALT")]
+            docs[FILES[2]]["counts"]["ns_focus"] = 1
+        elif damage == 14:
+            docs[FILES[0]]["candidates"] = []
+        elif damage == 15:
+            docs[FILES[2]]["ns_movers"] = []
+            docs[FILES[2]]["counts"]["ns_movers"] = 0
+        elif damage == 16:
+            docs[FILES[2]]["armed"] = "zz-unknown"
+        elif damage == 17:
+            docs[FILES[2]]["excluded_unknown"] = -1
+        elif damage == 18:
+            docs[FILES[2]]["ns_movers"][0] = 42
+        elif damage == 19:
+            docs[FILES[0]]["candidates"] = [member(i) for i in range(101)]
+        elif damage == 20:
+            extra = [member(i, None) for i in range(20, 20 + rng.choice([5, 6]))]
+            docs[FILES[2]]["ns_movers"] += extra
+            docs[FILES[2]]["counts"]["ns_movers"] += len(extra)
+        elif damage == 21:
+            docs[FILES[2]]["sources"]["snapshot"]["sha256"] = "c" * 64
+        # The remaining choices keep a unit undamaged, including supported and refused dates.
+        units.append(
+            {
+                "documents": docs,
+                "nows": [clock, (at + timedelta(seconds=rng.choice([1, 30, 601]))).isoformat()],
+                "ages": rng.choice([[1, 3600], [30, 1200], [0, 3601], [True, 3600]]),
+                "damage": damage,
+                "index": index,
+            }
+        )
+    return units
+
+
+def unit_answers(m: Any, units: list[dict[str, Any]]) -> list[Any]:
+    """Same wire JSON and explicit caller values, fresh temporary folder on either side."""
+    import tempfile
+
+    answers = []
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        for unit in units:
+            for name, document in unit["documents"].items():
+                (root / name).write_text(json.dumps(document))
+            for now_text in unit["nows"]:
+                for age in unit["ages"]:
+                    # Pandas preserves wire ns in its range; datetime keeps the full year range.
+                    now = datetime.fromisoformat(now_text)
+                    if 1700 <= now.year <= 2200:
+                        now = Timestamp(now_text)
+                    try:
+                        result = m.read_research_inputs(root, now=now, max_age=age)
+                    except m.InputError as exc:
+                        answer = ["refused", str(exc)]
+                    else:
+                        answer = [
+                            "accepted",
+                            {k: sorted(v) for k, v in result.memberships.items()},
+                            result.expires_at.isoformat(),
+                            sorted(result.unmapped),
+                            result.generation,
+                        ]
+                    answers.append(answer)
+    return answers
+
+
+def clock_answers(m: Any) -> list[int]:
+    # Full-range integer bridge plus all nine fractional digits, on both sides.
+    return [
+        m._ns(f"{year:04}-06-15T14:30:00.123456789Z") for year in (1, 1600, 1970, 2026, 2500, 9999)
+    ]
+
+
+UNIT_DIGEST = "e25baa71e9b2b24ea095088c76979910eccc00f5e0ecfc88f35076a50586b59d"
+
+
+def test_seeded_unit_answers_are_pinned() -> None:
+    import hashlib
+
+    units = seeded_units()
+    answers = unit_answers(reader, units)
+    assert len(units) == 320 and len(answers) == 1280
+    assert {answer[0] for answer in answers} == {"accepted", "refused"}
+    payload = json.dumps([answers, clock_answers(reader)], sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(payload.encode()).hexdigest() == UNIT_DIGEST
+
+
+def test_seeded_overnight_units_are_accepted_and_refused() -> None:
+    units = [
+        unit
+        for unit in seeded_units()
+        if datetime.fromisoformat(unit["nows"][0]).astimezone(ET).time() >= OVERNIGHT_START
+    ]
+    assert units
+    answers = unit_answers(reader, units)
+    assert {answer[0] for answer in answers} == {"accepted", "refused"}
+
+
+UNIT_PARITY = """
+import hashlib, os, sys
+src = os.environ["MOVERS_REFERENCE_SRC"]
+path = os.path.join(src, "sextant", "tradingview", "inputs.py")
+with open(path, "rb") as handle:
+    blob = handle.read()
+assert hashlib.sha1(b"blob %d\\0" % len(blob) + blob).hexdigest() == (
+    "83bb85dfb9e2833430b6d95b010dced8f6e47a49"
+)
+sys.path.insert(0, src)
+from sextant.tradingview import inputs as reader
+assert os.path.samefile(reader.__file__, path)
+print("PARITY " + json.dumps({
+    "versions": list(sys.version_info[:3]),
+    "answers": unit_answers(reader, json.loads(sys.stdin.read())),
+    "clocks": clock_answers(reader),
+}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_unit_parity_with_reference_in_child() -> None:
+    import sys
+
+    import reference_child as child
+
+    src, python = child.reference()
+    units = seeded_units()
+    script = (
+        "import json\nfrom datetime import datetime\nfrom pathlib import Path\n"
+        "from typing import Any\nfrom pandas import Timestamp\n"
+        + inspect.getsource(unit_answers)
+        + inspect.getsource(clock_answers)
+        + UNIT_PARITY
+    )
+    theirs = child.run(python, src, script, stdin=json.dumps(units))
+    here = list(sys.version_info[:3])
+    assert here == theirs["versions"], f"STOP: Python mismatch {here} != {theirs['versions']}"
+    ours = unit_answers(reader, units)
+    assert len(ours) == len(theirs["answers"]) == 1280
+    for index, (actual, expected) in enumerate(zip(ours, theirs["answers"], strict=True)):
+        assert actual == expected, f"display input answer differs at {index}"
+    assert clock_answers(reader) == theirs["clocks"]
+    accepted = sum(answer[0] == "accepted" for answer in ours)
+    print(f"\nPython: here {here}, reference {theirs['versions']}")
+    print(
+        f"unit parity: {len(units)} units, {len(ours)} answers ({accepted} accepted, "
+        f"{len(ours) - accepted} refused), all fields and six full-range clocks equal"
+    )

@@ -35,7 +35,7 @@ from typing import Any
 
 from nautilus_trader.model import CustomData, DataType, TradeTick
 
-from sextant_movers.ranking.baseline import BaselineTable, Segment
+from sextant_movers.ranking.baseline import Baseline, Segment
 from sextant_movers.ranking.engine import (
     GATES,
     MoverState,
@@ -106,7 +106,7 @@ class RankingPublisher:
         registry: Registry,
         universe: tuple[str, ...],
         universe_source: str,
-        baseline: BaselineTable,
+        baseline: Baseline,
         method_version: str,
         eligible_security_types: frozenset[str],
         price_band_edges: tuple[int, int],

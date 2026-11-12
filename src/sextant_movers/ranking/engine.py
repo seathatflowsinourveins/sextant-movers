@@ -22,7 +22,7 @@ from typing import Any
 
 from nautilus_trader.model import QuoteTick, TradeTick
 
-from sextant_movers.ranking.baseline import BaselineTable, Segment
+from sextant_movers.ranking.baseline import Baseline, Segment
 from sextant_movers.ranking.registry import Registry
 from sextant_movers.ranking.window import NS, TradeWindow
 
@@ -105,7 +105,7 @@ def _check(
     tick: TradeTick,
     symbol: str,
     key: tuple[str, Segment],
-    baseline: BaselineTable,
+    baseline: Baseline,
     registry: Registry,
 ) -> None:
     feed, segment = key
@@ -139,7 +139,7 @@ def advance_mover(
     state: MoverState,
     tick: TradeTick,
     references: ReferencePrices,
-    baseline: BaselineTable,
+    baseline: Baseline,
     *,
     segment: Segment,
     feed: str,

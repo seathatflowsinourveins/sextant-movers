@@ -1,0 +1,101 @@
+{
+  "schema": "k2-ranking.registry/1",
+  "rows": [
+    {
+      "name": "mover_min_move",
+      "unit": "fraction",
+      "value": "0.03",
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row mover_min_move; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "mover_min_trades_accel",
+      "unit": "ratio",
+      "value": "1.5",
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row mover_min_trades_accel; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "mover_min_dvol_ratio",
+      "unit": "ratio",
+      "value": "3",
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row mover_min_dvol_ratio; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "move_1m_window_s",
+      "unit": "seconds",
+      "value": 60,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row move_1m_window_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "move_5m_window_s",
+      "unit": "seconds",
+      "value": 300,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row move_5m_window_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "trades_accel_window_s",
+      "unit": "seconds",
+      "value": 60,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row trades_accel_window_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "trades_accel_baseline_min",
+      "unit": "minutes",
+      "value": 5,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row trades_accel_baseline_min; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "publish_min_interval_s",
+      "unit": "seconds",
+      "value": 1,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row publish_min_interval_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "generation_max_age_s",
+      "unit": "seconds",
+      "value": 1200,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row generation_max_age_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "heartbeat_max_age_s",
+      "unit": "seconds",
+      "value": 1200,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row heartbeat_max_age_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "input_max_age_s",
+      "unit": "seconds",
+      "value": 600,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row input_max_age_s; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    },
+    {
+      "name": "top_n",
+      "unit": "symbols",
+      "value": 100,
+      "source": "The reference, lanes/tradingview/k2-ranking.params.json at 06562bec0898a7203f4eaf69086ced83d2477e6b, row top_n; a starting value, never measured success.",
+      "calibration_state": "UNCALIBRATED",
+      "last_change": "2026-11-11"
+    }
+  ]
+}
