@@ -2,13 +2,14 @@
 
 Build on nautechsystems/nautilus_trader@v2.0.0rc8
  d53849b216e20f2c122ca01b4dd0da377638b186:python/nautilus_trader/core/datetime.py:81,122
-(the ns conversions behind inputs._ns), model/__init__.pyi:1673 (CustomData).
+(the ns conversions behind inputs._ns),
+python/nautilus_trader/model/__init__.pyi:1673 (CustomData).
 Build on python/cpython@v3.13.18 0d4bd512fc429e3d4eacdd113c975e161f21644d:
 Doc/library/datetime.rst:208,1226,1242; json.rst:356; re.rst:952;
 dataclasses.rst:176,204; Doc/builtins/functions.rst:2138,2176 (zip strict).
 Clock grammar: RFC 3339 section 5.6, read 2026-11-11.
 Acceptance: the reference, src/sextant/tradingview/bridge.py:58-385 at
-06562bec0898a7203f4eaf69086ced83d2477e6b, statement and refusal for statement and refusal.
+06562bec0898a7203f4eaf69086ced83d2477e6b, statement for statement, including every refusal.
 Departures: required caller method_version and paper_slot, validated before reading j5;
 feed from producer.SIP_FEED; member/prefix bounds from inputs and lag from
 inputs.MAX_SNAPSHOT_LAG_S times sessions.SECOND; generation types/digests and RANKER

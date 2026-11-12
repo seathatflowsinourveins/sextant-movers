@@ -12,6 +12,7 @@ from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 from decimal import Decimal as D
 from pathlib import Path
+from typing import Any
 
 import pytest
 from nautilus_trader.model import TradeTick
@@ -32,19 +33,55 @@ from sextant_movers.tradingview import bridge as b
 from sextant_movers.tradingview import inputs, producer
 
 METHOD = "zz-bridge-method"
+
 BOUNDS = b.DisplayBounds(D("0.05"), D("2"), 60)
+
 SUFFIX = "; lists NOT synced"
+
 FIRST = "One j5 document and sourced display bounds required"
+
 IDENTITY = "Invalid j5 document identity" + SUFFIX
+
 INVALID = "Invalid j5-ranked document" + SUFFIX
+
 EXPIRED = "j5 generation expired or lagged" + SUFFIX
+
 LIFETIME = "j5 generation has no display lifetime" + SUFFIX
+
+FAULTS = {
+    "unavailable": "j5 generation is unavailable",
+    "identity": "Invalid j5 document identity",
+    "generation_object": "j5 ranking generation must be one document",
+    "generation_invalid": "Invalid j5 ranking generation",
+    "digest": "j5 generation digest mismatch",
+    "coverage": "j5 generation coverage incomplete",
+    "method": "j5 generation identity mismatch",
+    "clocks": "j5 generation clocks inconsistent",
+    "source_missing": "j5 generation source missing",
+    "source_invalid": "j5 generation source invalid",
+    "source_mixed": "j5 generation sources mixed",
+    "no_rows": "j5 generation has no rows",
+    "source_mismatch": "j5 generation source mismatch",
+    "feature_clocks": "j5 feature clocks invalid",
+    "score": "j5 score does not match its features",
+    "rank_without_score": "j5 rank without score",
+    "rank_order": "j5 rank order mismatch",
+    "expired": "j5 generation expired or lagged",
+    "session": "j5 generation session mismatch",
+    "membership_missing": "j5 ranked membership missing",
+    "membership_empty": "j5 ranked membership empty or oversize",
+    "mapping": "j5 ranked mappings inexact or aliased",
+    "partial": "j5 projected row incomplete",
+    "focus": "j5 focus qualification incomplete",
+    "lifetime": "j5 generation has no display lifetime",
+    "catch": "Invalid j5-ranked document",
+}
 
 
 def real_doc(root: Path, count: int = 3, segment: str = "PRE", fraction: int = 100) -> dict:
     """Every base comes from LiveProducer and eligible, synthetic trades."""
     names = tuple(f"ZZB{i:03d}" for i in range(count))
-    start = START + {"PRE": 0, "RTH": 19800, "POST": 32400}[segment] * NS
+    start = START + {"PRE": 0, "RTH": 19800}[segment] * NS
     reg = registry(
         top_n=count,
         generation_max_age_s=1200,
@@ -70,7 +107,7 @@ def real_doc(root: Path, count: int = 3, segment: str = "PRE", fraction: int = 1
         for sec, price in ((0, "2.00"), (60, "2.10"), (300, "2.40"), (360, "2.60")):
             for name in names:
                 raw = tick(sec, price, name=name)
-                at = start + (sec + (segment == "POST")) * NS
+                at = start + sec * NS
                 view = TradeTick(
                     *(
                         raw.instrument_id,
@@ -92,7 +129,7 @@ def real_doc(root: Path, count: int = 3, segment: str = "PRE", fraction: int = 1
                     mask_source="zz-mask",
                 )
         pub.set_coverage(Coverage(CoverageState.READY, True, count, count, 0, 0, 0))
-        now = start + (360 + (segment == "POST")) * NS + fraction
+        now = start + 360 * NS + fraction
         assert live.heartbeat(at=now, received_ns=now)
         doc = live.build_unit(
             now=now,
@@ -147,7 +184,7 @@ def sources(doc, **kw):
         replace(
             r,
             reasons=tuple(
-                replace(reason, detail=json.dumps(json.loads(reason.detail) | kw))
+                replace(reason, detail=json.dumps(json.loads(reason.detail or "null") | kw))
                 if reason.code == "SOURCE"
                 else reason
                 for reason in r.reasons
@@ -163,37 +200,6 @@ def refuse(call, message):
         call()
     assert str(caught.value) == message
     assert isinstance(caught.value, inputs.InputError)
-
-
-# One fault per reachable document refusal; generation changes are always re-digested.
-FAULTS = {
-    "unavailable": "j5 generation is unavailable",
-    "identity": "Invalid j5 document identity",
-    "generation_object": "j5 ranking generation must be one document",
-    "generation_invalid": "Invalid j5 ranking generation",
-    "digest": "j5 generation digest mismatch",
-    "coverage": "j5 generation coverage incomplete",
-    "method": "j5 generation identity mismatch",
-    "clocks": "j5 generation clocks inconsistent",
-    "source_missing": "j5 generation source missing",
-    "source_invalid": "j5 generation source invalid",
-    "source_mixed": "j5 generation sources mixed",
-    "no_rows": "j5 generation has no rows",
-    "source_mismatch": "j5 generation source mismatch",
-    "feature_clocks": "j5 feature clocks invalid",
-    "score": "j5 score does not match its features",
-    "rank_without_score": "j5 rank without score",
-    "rank_order": "j5 rank order mismatch",
-    "expired": "j5 generation expired or lagged",
-    "session": "j5 generation session mismatch",
-    "membership_missing": "j5 ranked membership missing",
-    "membership_empty": "j5 ranked membership empty or oversize",
-    "mapping": "j5 ranked mappings inexact or aliased",
-    "partial": "j5 projected row incomplete",
-    "focus": "j5 focus qualification incomplete",
-    "lifetime": "j5 generation has no display lifetime",
-    "catch": "Invalid j5-ranked document",
-}
 
 
 def damage(doc, case):
@@ -246,6 +252,7 @@ def damage(doc, case):
     if case == "feature_clocks":
         return feature(doc, known_at=gen.known_at + 1)
     if case == "score":
+        assert first.score is not None
         return row(doc, score=first.score + 1)
     if case == "rank_without_score":
         return row(doc, score=None)
@@ -272,6 +279,44 @@ def damage(doc, case):
     return doc
 
 
+def shift(doc, offset):
+    gen = generation(doc)
+    changed = rebuild(
+        doc,
+        **{
+            k: getattr(gen, k) + offset for k in ("ts_event", "input_cutoff", "known_at", "ts_init")
+        },
+        rows=tuple(
+            replace(
+                r,
+                features=tuple(
+                    replace(
+                        f,
+                        ts_event=None if f.ts_event is None else f.ts_event + offset,
+                        known_at=None if f.known_at is None else f.known_at + offset,
+                    )
+                    for f in r.features
+                ),
+            )
+            for r in gen.rows
+        ),
+    )
+    source = json.loads(next(r.detail for r in gen.rows[0].reasons if r.code == "SOURCE") or "null")
+    changed = sources(
+        changed, start_ns=source["start_ns"] + offset, end_ns=source["end_ns"] + offset
+    )
+    changed.update(
+        generated_at_ns=doc["generated_at_ns"] + offset, expires_at_ns=doc["expires_at_ns"] + offset
+    )
+    return changed
+
+
+def write_read(root, projected, now):
+    for name, document in projected.documents().items():
+        (root / name).write_text(json.dumps(document), encoding="utf-8")
+    return inputs.read_research_inputs(root, now=now, max_age=3600)
+
+
 @pytest.mark.parametrize("case", FAULTS)
 def test_each_document_refusal_alone(doc, case):
     message = FAULTS[case] + ("" if case == "generation_object" else SUFFIX)
@@ -281,7 +326,7 @@ def test_each_document_refusal_alone(doc, case):
 @pytest.mark.parametrize("field", ["gap_bound", "rvol_bound"])
 @pytest.mark.parametrize("value", [D(0), D(-1), D("NaN"), D("Infinity"), D("-Infinity"), 0.1, True])
 def test_decimal_bounds_each_edge(field, value):
-    kw = dict(gap_bound=D("0.05"), rvol_bound=D(2), max_age_s=1) | {field: value}
+    kw: dict[str, Any] = dict(gap_bound=D("0.05"), rvol_bound=D(2), max_age_s=1) | {field: value}
     refuse(lambda: b.DisplayBounds(**kw), "Sourced positive Decimal display bounds required")
 
 
@@ -366,6 +411,140 @@ def test_last_except_each_class(doc, monkeypatch, kind):
 
     monkeypatch.setattr(b, "_generation", fail)
     refuse(lambda: project(doc), INVALID)
+
+
+@pytest.mark.parametrize("segment", ["PRE", "RTH"])
+@pytest.mark.parametrize("fraction", [0, 123456789])
+def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
+    doc = real_doc(tmp_path / "lease", 3, segment, fraction)
+    before = copy.deepcopy(doc)
+    unit = project(doc)
+    gen = generation(doc)
+    clocks = [b._rfc(getattr(gen, k)) for k in ("ts_event", "input_cutoff", "known_at")]
+    identity = {"as_of": clocks[0], "sha256": doc["generation_sha256"]}
+    common = dict(
+        session_date=gen.session_date.isoformat(),
+        generated_at=clocks[2],
+        as_of=clocks[1],
+        as_of_snapshot=clocks[0],
+        snapshot_status="observed",
+        status="fresh",
+        generation=identity,
+    )
+    movers = [
+        {"symbol": r.symbol, "tradingview_symbol": m, "labels": [f"rank:{r.rank}"]}
+        for r, m in zip(gen.rows, doc["watchlists"]["NS Ranked"], strict=True)
+    ]
+    focus = [m for r, m in zip(gen.rows, movers, strict=True) if r.focus_eligible is True]
+    assert unit.documents() == {
+        "top100.json": {"schema": "morning-pack.candidates/1", **common, "candidates": movers},
+        "focus.json": {"schema": "top100.focus/1", **common, "candidates": focus},
+        "display-lists.json": {
+            "schema": "ns-display-lists/1",
+            **common,
+            "ns_movers": movers,
+            "ns_focus": focus,
+            "bounds": {"gap_bound": "0.05", "rvol_bound": "2", "max_age_s": 60},
+            "counts": {"ns_movers": len(movers), "ns_focus": len(focus)},
+            "excluded_unknown": 0,
+            "armed": "UNVERIFIED",
+            "sources": {"snapshot": identity, "armed_sets": []},
+        },
+    }
+    assert len({id(d["generation"]) for d in unit.documents().values()}) == 3
+    assert not hasattr(unit, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        unit.focus = {}  # type: ignore[misc]
+    assert doc == before and project(doc).documents() == unit.documents()
+    assert clocks[2].endswith(".123456789+00:00" if fraction else "00+00:00")
+    result = write_read(tmp_path, unit, inputs.timestamp(clocks[2]) + timedelta(seconds=1))
+    assert result.generation == identity and not result.unmapped
+    for key, members in (("NS movers", movers), ("NS focus", focus)):
+        assert result.memberships[key] == frozenset(m["tradingview_symbol"] for m in members)
+    # Reader exposes sets; wire arrays retain rank order.
+    assert [m["tradingview_symbol"] for m in movers] == doc["watchlists"]["NS Ranked"]
+    with pytest.raises(inputs.InputError, match="Research generation expired; lists NOT synced"):
+        write_read(tmp_path, unit, inputs.timestamp(clocks[0]) + timedelta(seconds=61))
+
+
+def test_source_shared_constants_types_and_pure_boundary():
+    tree = ast.parse(Path(b.__file__).read_text())
+    allowed = {
+        "__future__",
+        "json",
+        "re",
+        "collections.abc",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "typing",
+        "sextant_movers.sessions",
+        "sextant_movers.ranking.generation",
+        "sextant_movers.ranking.publisher",
+        "sextant_movers.tradingview.inputs",
+        "sextant_movers.tradingview.producer",
+    }
+    imports = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    imports |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert imports <= allowed
+    assert b.MAX_MEMBERS == inputs.MAX_MEMBERS
+    assert b.REFUSED_PREFIXES is inputs.REFUSED_PREFIXES
+    assert b.MAX_LAG_NS == inputs.MAX_SNAPSHOT_LAG_S * SECOND
+    for name in ("EPOCH", "QUALIFIED", "TICKER", "InputError", "_ns", "_session", "timestamp"):
+        assert getattr(b, name) is getattr(inputs, name)
+    assert b.RankingGeneration is RankingGeneration and b.universe_digest is universe_digest
+    assert b.SIP_FEED == producer.SIP_FEED
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and ast.get_docstring(n):
+            n.body = n.body[1:]
+    values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)]
+    assert not {"sip", 600, 100, *inputs.REFUSED_PREFIXES} & set(values)
+    forbidden = {
+        "open",
+        "write",
+        "write_text",
+        "write_bytes",
+        "read",
+        "read_text",
+        "now",
+        "time",
+        "sleep",
+        "Thread",
+        "Timer",
+        "socket",
+        "__import__",
+        "exec",
+        "eval",
+    }
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            assert (
+                n.func.id
+                if isinstance(n.func, ast.Name)
+                else n.func.attr
+                if isinstance(n.func, ast.Attribute)
+                else ""
+            ) not in forbidden
+
+
+def test_kept_expired_branch_requires_changing_mapping(doc):
+    gen = generation(doc)
+    assert gen.ts_event <= gen.known_at < doc["expires_at_ns"]
+
+    class ChangingExpiry(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            if key == "expires_at_ns":
+                self.reads += 1
+                if self.reads == 3:
+                    return gen.ts_event
+            return super().__getitem__(key)
+
+    refuse(lambda: project(ChangingExpiry(doc)), "j5 generation expired" + SUFFIX)
+
+
+# Cut 2: remaining unit edges and observations.
 
 
 @pytest.mark.parametrize("field", ["ranker_version", "profile_version"])
@@ -514,98 +693,6 @@ def test_overnight_refuses_for_each_clock(doc, clock):
     refuse(lambda: project(changed), "j5 generation session mismatch" + SUFFIX)
 
 
-def shift(doc, offset):
-    gen = generation(doc)
-    changed = rebuild(
-        doc,
-        **{
-            k: getattr(gen, k) + offset for k in ("ts_event", "input_cutoff", "known_at", "ts_init")
-        },
-        rows=tuple(
-            replace(
-                r,
-                features=tuple(
-                    replace(
-                        f,
-                        ts_event=None if f.ts_event is None else f.ts_event + offset,
-                        known_at=None if f.known_at is None else f.known_at + offset,
-                    )
-                    for f in r.features
-                ),
-            )
-            for r in gen.rows
-        ),
-    )
-    source = json.loads(next(r.detail for r in gen.rows[0].reasons if r.code == "SOURCE"))
-    changed = sources(
-        changed, start_ns=source["start_ns"] + offset, end_ns=source["end_ns"] + offset
-    )
-    changed.update(
-        generated_at_ns=doc["generated_at_ns"] + offset, expires_at_ns=doc["expires_at_ns"] + offset
-    )
-    return changed
-
-
-def write_read(root, projected, now):
-    for name, document in projected.documents().items():
-        (root / name).write_text(json.dumps(document), encoding="utf-8")
-    return inputs.read_research_inputs(root, now=now, max_age=3600)
-
-
-@pytest.mark.parametrize("segment", ["PRE", "RTH"])
-@pytest.mark.parametrize("fraction", [0, 123456789])
-def test_exact_output_and_roundtrip(tmp_path, segment, fraction):
-    doc = real_doc(tmp_path / "lease", 3, segment, fraction)
-    before = copy.deepcopy(doc)
-    unit = project(doc)
-    gen = generation(doc)
-    clocks = [b._rfc(getattr(gen, k)) for k in ("ts_event", "input_cutoff", "known_at")]
-    identity = {"as_of": clocks[0], "sha256": doc["generation_sha256"]}
-    common = dict(
-        session_date=gen.session_date.isoformat(),
-        generated_at=clocks[2],
-        as_of=clocks[1],
-        as_of_snapshot=clocks[0],
-        snapshot_status="observed",
-        status="fresh",
-        generation=identity,
-    )
-    movers = [
-        {"symbol": r.symbol, "tradingview_symbol": m, "labels": [f"rank:{r.rank}"]}
-        for r, m in zip(gen.rows, doc["watchlists"]["NS Ranked"], strict=True)
-    ]
-    focus = [m for r, m in zip(gen.rows, movers, strict=True) if r.focus_eligible is True]
-    assert unit.documents() == {
-        "top100.json": {"schema": "morning-pack.candidates/1", **common, "candidates": movers},
-        "focus.json": {"schema": "top100.focus/1", **common, "candidates": focus},
-        "display-lists.json": {
-            "schema": "ns-display-lists/1",
-            **common,
-            "ns_movers": movers,
-            "ns_focus": focus,
-            "bounds": {"gap_bound": "0.05", "rvol_bound": "2", "max_age_s": 60},
-            "counts": {"ns_movers": len(movers), "ns_focus": len(focus)},
-            "excluded_unknown": 0,
-            "armed": "UNVERIFIED",
-            "sources": {"snapshot": identity, "armed_sets": []},
-        },
-    }
-    assert len({id(d["generation"]) for d in unit.documents().values()}) == 3
-    assert not hasattr(unit, "__dict__")
-    with pytest.raises(FrozenInstanceError):
-        unit.focus = {}  # type: ignore[misc]
-    assert doc == before and project(doc).documents() == unit.documents()
-    assert clocks[2].endswith(".123456789+00:00" if fraction else "00+00:00")
-    result = write_read(tmp_path, unit, inputs.timestamp(clocks[2]) + timedelta(seconds=1))
-    assert result.generation == identity and not result.unmapped
-    for key, members in (("NS movers", movers), ("NS focus", focus)):
-        assert result.memberships[key] == frozenset(m["tradingview_symbol"] for m in members)
-    # Reader exposes sets; wire arrays retain rank order.
-    assert [m["tradingview_symbol"] for m in movers] == doc["watchlists"]["NS Ranked"]
-    with pytest.raises(inputs.InputError, match="Research generation expired; lists NOT synced"):
-        write_read(tmp_path, unit, inputs.timestamp(clocks[0]) + timedelta(seconds=61))
-
-
 def test_narrowed_age_excluded_unknown_and_paired_focus_subset(doc):
     gen = generation(doc)
     last = gen.rows[-1]
@@ -617,83 +704,6 @@ def test_narrowed_age_excluded_unknown_and_paired_focus_subset(doc):
     assert unit.display_lists["bounds"]["max_age_s"] == 3
     assert len(unit.top100["candidates"]) == len(unit.focus["candidates"]) == 1
     assert unit.focus["candidates"] == unit.top100["candidates"]
-
-
-def test_source_shared_constants_types_and_pure_boundary():
-    tree = ast.parse(Path(b.__file__).read_text())
-    allowed = {
-        "__future__",
-        "json",
-        "re",
-        "collections.abc",
-        "dataclasses",
-        "datetime",
-        "decimal",
-        "typing",
-        "sextant_movers.sessions",
-        "sextant_movers.ranking.generation",
-        "sextant_movers.ranking.publisher",
-        "sextant_movers.tradingview.inputs",
-        "sextant_movers.tradingview.producer",
-    }
-    imports = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    imports |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert imports <= allowed
-    assert b.MAX_MEMBERS == inputs.MAX_MEMBERS
-    assert b.REFUSED_PREFIXES is inputs.REFUSED_PREFIXES
-    assert b.MAX_LAG_NS == inputs.MAX_SNAPSHOT_LAG_S * SECOND
-    for name in ("EPOCH", "QUALIFIED", "TICKER", "InputError", "_ns", "_session", "timestamp"):
-        assert getattr(b, name) is getattr(inputs, name)
-    assert b.RankingGeneration is RankingGeneration and b.universe_digest is universe_digest
-    assert b.SIP_FEED == producer.SIP_FEED
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef)) and ast.get_docstring(n):
-            n.body = n.body[1:]
-    values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)]
-    assert not {"sip", 600, 100, *inputs.REFUSED_PREFIXES} & set(values)
-    forbidden = {
-        "open",
-        "write",
-        "write_text",
-        "write_bytes",
-        "read",
-        "read_text",
-        "now",
-        "time",
-        "sleep",
-        "Thread",
-        "Timer",
-        "socket",
-        "__import__",
-        "exec",
-        "eval",
-    }
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Call):
-            assert (
-                n.func.id
-                if isinstance(n.func, ast.Name)
-                else n.func.attr
-                if isinstance(n.func, ast.Attribute)
-                else ""
-            ) not in forbidden
-
-
-def test_kept_expired_branch_requires_changing_mapping(doc):
-    gen = generation(doc)
-    assert gen.ts_event <= gen.known_at < doc["expires_at_ns"]
-
-    class ChangingExpiry(dict):
-        reads = 0
-
-        def __getitem__(self, key):
-            if key == "expires_at_ns":
-                self.reads += 1
-                if self.reads == 3:
-                    return gen.ts_event
-            return super().__getitem__(key)
-
-    refuse(lambda: project(ChangingExpiry(doc)), "j5 generation expired" + SUFFIX)
 
 
 def test_kept_lagged_projection_has_no_readable_interior(doc, tmp_path):
@@ -715,3 +725,60 @@ def test_post_source_is_retained_and_focus_false_selects_nothing(doc):
     )
     unit = project(changed)
     assert unit.focus["candidates"] == unit.display_lists["ns_focus"] == []
+
+
+def test_all_reference_refusal_statements_are_kept():
+    tree = ast.parse(Path(b.__file__).read_text())
+    messages = [
+        n.exc.args[0].value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Raise)
+        and isinstance(n.exc, ast.Call)
+        and isinstance(n.exc.func, ast.Name)
+        and n.exc.func.id == "BridgeError"
+    ]
+    expected = [
+        text + ("" if case == "generation_object" else SUFFIX) for case, text in FAULTS.items()
+    ]
+    expected += [
+        FIRST,
+        "Sourced positive Decimal display bounds required",
+        "Generation clocks must be nonnegative nanoseconds",
+        "Generation clock does not round-trip as RFC3339",
+        "Generation clock does not round-trip as RFC3339",
+        "j5 generation expired" + SUFFIX,
+    ]
+    assert len(messages) == len(expected) == 32
+    assert sorted(messages) == sorted(expected)
+
+
+def test_rank_ties_use_acceleration_then_symbol(doc):
+    gen = generation(doc)
+    # Equal score/acceleration keeps lexical tie order; raising acceleration changes it.
+    assert [r.symbol for r in gen.rows] == sorted(r.symbol for r in gen.rows)
+    changed = feature(doc, "trades_accel", value=D("0.0001"))
+    refuse(lambda: project(changed), "j5 rank order mismatch" + SUFFIX)
+    # A coherent, higher score with the old rank also refuses.
+    second = gen.rows[1]
+    assert second.score is not None
+    move = next(f.value for f in second.features if f.name == "move")
+    assert move is not None
+    new_features = tuple(
+        replace(f, value=move * 2) if f.name == "move" else f for f in second.features
+    )
+    changed = rebuild(
+        doc,
+        rows=(
+            gen.rows[0],
+            replace(second, score=second.score * 2, features=new_features),
+            *gen.rows[2:],
+        ),
+    )
+    refuse(lambda: project(changed), "j5 rank order mismatch" + SUFFIX)
+
+
+@pytest.mark.parametrize("prefix", sorted(inputs.REFUSED_PREFIXES))
+def test_every_shared_refused_prefix(doc, prefix):
+    changed = copy.deepcopy(doc)
+    changed["watchlists"]["NS Ranked"][0] = prefix + ":ZZB000"
+    refuse(lambda: project(changed), "j5 ranked mappings inexact or aliased" + SUFFIX)
