@@ -226,7 +226,7 @@ def test_subagent_compaction_emits_no_session_role_context(
 ) -> None:
     # The common fields identify who a hook fires in; they do not promise that
     # SessionStart fires inside a subagent. Exercise that documented input shape.
-    payload = {
+    payload: dict[str, str | None] = {
         "session_id": "session-proof",
         "transcript_path": str(tmp_path / "session.jsonl"),
         "cwd": str(tmp_path),
