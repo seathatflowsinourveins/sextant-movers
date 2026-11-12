@@ -9,7 +9,7 @@ import copy
 import inspect
 import json
 from dataclasses import FrozenInstanceError, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal as D
 from pathlib import Path
 
@@ -728,11 +728,11 @@ def test_sources_return_is_unused_and_shared_session_bounds(doc, monkeypatch):
 def test_overnight_refuses_for_each_clock(doc, clock):
     gen = generation(doc)
     day = gen.session_date - timedelta(days=3)  # synthetic Tuesday before this Friday
-    text = day.isoformat() + ("T08:59:00+00:00" if clock == "ts_event" else "T00:59:00+00:00")
-    if clock != "ts_event":
-        # 19:59 ET on Tuesday; the overnight belongs to Wednesday, both trading dates.
-        text = (day + timedelta(days=1)).isoformat() + "T00:59:00+00:00"
-    changed = shift(doc, inputs._ns(text) - gen.ts_event)
+    # One minute before a session boundary in New York time, whatever that date's UTC offset:
+    # 03:59 is still the overnight; 19:59 on Tuesday is not, and Wednesday's overnight follows.
+    edge = inputs.PRE_START if clock == "ts_event" else inputs.OVERNIGHT_START
+    local = datetime.combine(day, edge, tzinfo=inputs.ET) - timedelta(minutes=1)
+    changed = shift(doc, int(local.timestamp()) * NS - gen.ts_event)
     shifted = generation(changed)
     boundary = shifted.ts_event + 60 * NS
     kw = {"known_at": boundary, "ts_init": boundary}
@@ -967,6 +967,17 @@ def seeded_payload(root):
     return seeded_documents(root) | {"extras": extra_cases()}
 
 
+@pytest.fixture(scope="module")
+def seeded_once(tmp_path_factory):
+    # The documents do not depend on the lease folder's path: build them once for the file.
+    return seeded_payload(tmp_path_factory.mktemp("leases"))
+
+
+@pytest.fixture
+def payload(seeded_once):
+    return copy.deepcopy(seeded_once)
+
+
 def answer_digest(answers):
     import hashlib
 
@@ -975,11 +986,13 @@ def answer_digest(answers):
     ).hexdigest()
 
 
+# SHA-256 of this side's seeded answers as compact sorted JSON. The local parity proof below
+# checks that the reference's answers have the same digest. After an intended change of the
+# seeded inputs or of an answer, run that proof and pin the digest both sides then agree on.
 BRIDGE_DIGEST = "b4144efff9e058d9ac523ec3505bc0db262305dad8ccc9a7a7d4e99c0f515f90"
 
 
-def test_seeded_answers_are_pinned(tmp_path):
-    payload = seeded_payload(tmp_path / "leases")
+def test_seeded_answers_are_pinned(payload):
     answers = bridge_answers(b, payload, {"method_version": METHOD, "paper_slot": SLOT})
     assert len(payload["cases"]) == 320 and len(answers["documents"]) == 640
     assert {a[0] for a in answers["documents"]} == {"accepted", "refused"}
@@ -988,10 +1001,9 @@ def test_seeded_answers_are_pinned(tmp_path):
     assert answer_digest(answers) == BRIDGE_DIGEST
 
 
-def test_every_accepted_seeded_projection_roundtrips(tmp_path):
+def test_every_accepted_seeded_projection_roundtrips(tmp_path, payload):
     from pandas import Timestamp
 
-    payload = seeded_payload(tmp_path / "leases")
     accepted = 0
     for case in payload["cases"]:
         for gap, ratio, age in case["bounds"]:
@@ -1026,6 +1038,7 @@ def test_every_accepted_seeded_projection_roundtrips(tmp_path):
 BRIDGE_PARITY = r"""
 import hashlib, json, os, sys
 src = os.environ["MOVERS_REFERENCE_SRC"]
+# Git blob ids of the reference's files at the commit this module's header names.
 blobs = {
     "bridge.py": "29f8c37cd021082ae43f1d5c70c834456b6c0a8c",
     "inputs.py": "83bb85dfb9e2833430b6d95b010dced8f6e47a49",
@@ -1043,6 +1056,8 @@ assert os.path.samefile(
     reference.__file__, os.path.join(src, "sextant", "tradingview", "bridge.py")
 )
 payload = json.loads(sys.stdin.read())
+for name in ("METHOD", "DISPLAY_PAPER_SLOT"):
+    assert hasattr(reference, name), f"the reference no longer has {name}: fix this harness"
 reference.METHOD = payload["method_version"]
 reference.DISPLAY_PAPER_SLOT = payload["paper_slot"]
 print("PARITY " + json.dumps({
@@ -1053,14 +1068,13 @@ print("PARITY " + json.dumps({
 
 
 @pytest.mark.local
-def test_seeded_parity_with_reference_in_child(tmp_path):
+def test_seeded_parity_with_reference_in_child(payload):
     import sys
 
     import nautilus_trader
     import reference_child as child
 
     src, python = child.reference()
-    payload = seeded_payload(tmp_path / "leases")
     script = "import json\nfrom decimal import Decimal as D\n"
     script += inspect.getsource(bridge_answers) + BRIDGE_PARITY
     theirs = child.run(python, src, script, stdin=json.dumps(payload))
@@ -1073,7 +1087,7 @@ def test_seeded_parity_with_reference_in_child(tmp_path):
             zip(ours[kind], theirs["answers"][kind], strict=True)
         ):
             assert actual == expected, f"{kind} answer differs at {index}"
-    assert answer_digest(ours) == BRIDGE_DIGEST
+    assert answer_digest(ours) == answer_digest(theirs["answers"]) == BRIDGE_DIGEST
     accepted = sum(answer[0] == "accepted" for answer in ours["documents"])
     print(f"\nPython/engine: here {here}, reference {theirs['versions']}")
     print(
