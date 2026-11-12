@@ -62,7 +62,7 @@ def select(text: str) -> Selection:
             raise ValueError("NASDAQ Trader selection flags must be Y or N")
         rows.append(fields)
 
-    counts = dict.fromkeys(_NASDAQ_REASONS if nasdaq else _OTHER_REASONS, 0)
+    counts: dict[str, int] = dict.fromkeys(_NASDAQ_REASONS if nasdaq else _OTHER_REASONS, 0)
     symbols: set[str] = set()
     for fields in rows:
         symbol = fields[symbol_col]
