@@ -108,6 +108,50 @@ def read(paced: Any, **changes: Any) -> tuple[Movers, MostActives]:
     return m.read(paced, **(args | changes))
 
 
+def plain_client() -> tuple[ScreenerClient, Session, list[str]]:
+    events: list[str] = []
+    plain = ScreenerClient(
+        api_key="key-id",
+        secret_key="secret-key",  # noqa: S106 (SDK's explicit test placeholder)
+    )
+    plain._session = session = Session(((200, movers()), (200, actives())), events)
+    return plain, session, events
+
+
+def test_plain_sdk_client_is_refused_without_a_wire_request() -> None:
+    plain, session, events = plain_client()
+    with pytest.raises(ValueError) as caught:
+        read(plain)
+    assert str(caught.value) == "screener reads need the paced transport, PacedScreener"
+    assert session.seen == [] and events == []
+
+
+def test_non_client_double_is_refused_without_calling_either_method() -> None:
+    calls: list[str] = []
+
+    class Double:
+        def get_market_movers(self, request_params: MarketMoversRequest) -> Movers:
+            calls.append("movers")
+            return Movers(**movers())
+
+        def get_most_actives(self, request_params: MostActivesRequest) -> MostActives:
+            calls.append("actives")
+            return MostActives(**actives())
+
+    with pytest.raises(ValueError) as caught:
+        read(Double())
+    assert str(caught.value) == "screener reads need the paced transport, PacedScreener"
+    assert calls == []
+
+
+def test_client_refusal_precedes_movers_bounds_without_a_wire_request() -> None:
+    plain, session, events = plain_client()
+    with pytest.raises(ValueError) as caught:
+        read(plain, movers_top=0)
+    assert str(caught.value) == "screener reads need the paced transport, PacedScreener"
+    assert session.seen == [] and events == []
+
+
 @pytest.mark.parametrize("by", list(MostActivesBy))
 @pytest.mark.parametrize(("movers_top", "actives_top"), [(1, 1), (50, 100)])
 def test_two_sdk_reads_keep_paths_queries_order_pacing_and_models(
@@ -360,11 +404,22 @@ def imports(path: Path) -> set[str]:
     return result
 
 
+def imports_screener(path: Path) -> bool:
+    return any(name == m.__name__ or name.startswith(m.__name__ + ".") for name in imports(path))
+
+
+def test_sdk_screener_import_is_not_an_import_of_our_screener(tmp_path: Path) -> None:
+    path = tmp_path / "module.py"
+    path.write_text("import alpaca.data.historical.screener\n")
+    assert imports(path) == {"alpaca.data.historical.screener"}
+    assert not imports_screener(path)
+
+
 def test_screener_stays_beside_the_rank_and_out_of_both_contracts() -> None:
     own_path = Path(m.__file__)
     for path in (ROOT / "src" / "sextant_movers").rglob("*.py"):
         if path != own_path:
-            assert not any("screener" in name for name in imports(path)), path
+            assert not imports_screener(path), path
     local = {name for name in imports(own_path) if name.startswith("sextant_movers")}
     assert all(
         name.startswith(("sextant_movers.ranking.generation", "sextant_movers.ranking.bars"))
