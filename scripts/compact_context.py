@@ -12,7 +12,8 @@ Carried from Sextant's scripts/compact_context.py (see ORIGINS.md).
 
 The state folder is private, so this public repository never names it: the
 MOVERS_STATE_DIR variable does, and output shows the variable's name, never its
-value. With the variable unset, each hook mode prints one line saying so.
+value. With the variable unset, each hook mode prints one line saying so for a
+session; a subagent gets nothing in either case.
 
 The hook modes print only. They never read a state file's contents, never print
 an environment variable's value, make no network call and write no repository
