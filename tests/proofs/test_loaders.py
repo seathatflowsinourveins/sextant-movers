@@ -459,3 +459,188 @@ def test_shipped_files_through_loaders_values_sources_dates_and_key_order() -> N
         assert loaders.load_display_bounds(path) == DisplayBounds(Decimal("0.05"), Decimal(2), 600)
     for source in [BUDGET_SOURCE, *(r["source"] for r in raw["rows"])]:
         assert not re.search(r"/(?:home|Users)/|ADR-\d+", source)
+
+
+# A complete passing prefix ends above this seeded file-loader extension.
+def loader_cases() -> list[list[str]]:
+    import random
+
+    rng = random.Random(20261114)  # noqa: S311 - made-up documents
+    cases = []
+    budget_faults = [
+        None,
+        ("value", 0),
+        ("value", 201),
+        ("value", True),
+        ("value", "2"),
+        ("scope", "UNAVAILABLE"),
+        ("calibration", "UNAVAILABLE"),
+        ("source", " "),
+        ("source", 1),
+        ("calibration", []),
+    ]
+    bounds_faults = [
+        None,
+        ("unit", "zz"),
+        ("value", 1.5),
+        ("source", " "),
+        ("last_change", "zz"),
+        ("calibration_state", "UNAVAILABLE"),
+        ("value", "NaN"),
+        ("value", "Infinity"),
+        ("value", "0"),
+        ("value", "1e3"),
+        ("value", " 2 "),
+        ("calibration_state", []),
+    ]
+    for kind in ("budget", "bounds"):
+        for index in range(384):
+            doc: Any
+            if kind == "budget":
+                doc = budget(
+                    value=rng.randint(1, 200),
+                    source=f"zz-made-up {rng.randint(0, 99999)}",
+                    calibration=rng.choice(("CALIBRATED", "UNCALIBRATED")),
+                )
+                faults = budget_faults
+                row = doc[0]
+            else:
+                doc = bounds()
+                for item in doc["rows"]:
+                    item["value"] = (
+                        rng.randint(1, 9999)
+                        if item["name"] == "max_age_s"
+                        else f"{rng.randint(1, 9999)}.{rng.randint(0, 999):03}"
+                    )
+                    item["calibration_state"] = rng.choice(("CALIBRATED", "UNCALIBRATED"))
+                row = doc["rows"][rng.randrange(3)]
+                faults = bounds_faults
+            # Valid, single fault, and seeded combinations; raw-shape faults are separate.
+            if index % 4 in (1, 2):
+                for _ in range(1 if index % 4 == 1 else rng.randint(2, 4)):
+                    fault = rng.choice(faults)
+                    if fault is not None:
+                        row[fault[0]] = fault[1]
+            if index % 12 == 3:
+                text = rng.choice(("{", "null", "1", "[]", '{"rows": [1]}'))
+            elif index % 12 == 7:
+                if kind == "budget":
+                    doc = [*doc, *budget(value=None)]
+                else:
+                    doc["rows"].append(doc["rows"][0].copy())
+                text = json.dumps(doc)
+            elif index % 12 == 11:
+                if kind == "budget":
+                    doc = {"rows": doc}
+                else:
+                    del row[rng.choice(tuple(row))]
+                text = json.dumps(doc)
+            else:
+                text = json.dumps(doc)
+            cases.append([kind, text])
+    return cases
+
+
+def loader_answer(module: Any, kind: str, path: Path) -> list[Any]:
+    try:
+        if kind == "budget":
+            return ["accepted", module.load_request_budget(path)]
+        result = module.load_display_bounds(path)
+        return ["accepted", str(result.gap_bound), str(result.rvol_bound), result.max_age_s]
+    except Exception as error:
+        name, message = type(error).__name__, str(error)
+        # Only the reference's named refusal class is mapped; raw exceptions stay exact.
+        if name == "PrestageError":
+            name = "ValueError"
+            if kind == "budget" and message.startswith(
+                "the prestage request budget is unavailable:"
+            ):
+                message = budget_refusal(path)
+        return ["refused", name, message.replace(str(path), "<file>")]
+
+
+def loader_answers(tmp_path: Path, cases: list[list[str]]) -> list[list[Any]]:
+    path = tmp_path / "zz-seeded.json"
+    answers = []
+    for kind, text in cases:
+        path.write_text(text, encoding="utf-8")
+        answers.append(loader_answer(loaders, kind, path))
+    return answers
+
+
+def loader_digest(answers: Any) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(answers, separators=(",", ":")).encode()).hexdigest()
+
+
+def test_seeded_loader_answers_are_pinned(tmp_path: Path) -> None:
+    cases = loader_cases()
+    assert sum(kind == "budget" for kind, _ in cases) >= 300
+    assert sum(kind == "bounds" for kind, _ in cases) >= 300
+    assert (
+        loader_digest(loader_answers(tmp_path, cases))
+        == "c2b9c79ab5011e15c0fb88dde298e060ba39d3eead832bee4a646f494e129125"
+    )
+
+
+LOADER_CHILD = r"""
+import hashlib, json, os, platform, sys, tempfile
+from pathlib import Path
+from typing import Any
+src = Path(os.environ["MOVERS_REFERENCE_SRC"])
+pins = {
+    "tradingview/prestage.py": "e3345d330725a4ad12d6e517ae74c592d3633ffe",
+    "tradingview/bridge.py": "29f8c37cd021082ae43f1d5c70c834456b6c0a8c",
+}
+for name, expected in pins.items():
+    blob = (src / "sextant" / name).read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(blob) + blob).hexdigest() == expected
+payload = json.load(sys.stdin)
+version = platform.python_version()
+assert version == payload["version"], "Python versions differ; stop parity"
+sys.path.insert(0, str(src))
+from sextant.tradingview import prestage as module
+with tempfile.TemporaryDirectory() as folder:
+    path = Path(folder) / "zz-seeded.json"
+    answers = []
+    for kind, text in payload["cases"]:
+        path.write_text(text, encoding="utf-8")
+        answers.append(loader_answer(module, kind, path))
+print("PARITY " + json.dumps({"version": version, "answers": answers}))
+"""
+
+
+@pytest.mark.local
+def test_seeded_loaders_equal_reference(tmp_path: Path) -> None:
+    import platform
+
+    import reference_child
+
+    src, python = reference_child.reference()
+    cases = loader_cases()
+    script = (
+        "from __future__ import annotations\n"
+        + inspect.getsource(budget_refusal)
+        + inspect.getsource(loader_answer)
+        + LOADER_CHILD
+    )
+    theirs = reference_child.run(
+        python,
+        src,
+        script,
+        stdin=json.dumps({"version": platform.python_version(), "cases": cases}),
+    )
+    assert theirs["version"] == platform.python_version(), "Python versions differ; stop parity"
+    ours = loader_answers(tmp_path, cases)
+    assert theirs["answers"] == ours
+    counts = []
+    for kind in ("budget", "bounds"):
+        answers = [a for c, a in zip(cases, ours, strict=True) if c[0] == kind]
+        accepted = sum(a[0] == "accepted" for a in answers)
+        counts.append(
+            f"{kind} files={len(answers)} accepted={accepted} refused={len(answers) - accepted}"
+        )
+    print(
+        "; ".join(counts) + f"; Python={theirs['version']} both sides; digest={loader_digest(ours)}"
+    )
