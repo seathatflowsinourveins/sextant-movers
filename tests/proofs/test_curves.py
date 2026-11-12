@@ -364,3 +364,17 @@ def test_module_has_no_feed_literal_session_count_or_forbidden_import() -> None:
             imports.append(node.module or "")
     assert not any(n.split(".")[0] in {"sextant", "alpaca", "socket"} for n in imports)
     assert not any("trading" in n for n in imports)
+
+
+def test_interpolation_precedes_median_when_session_curves_cross() -> None:
+    days = tuple(DAY + timedelta(days=i) for i in range(3))
+    values = ([0, 0, 100], [0, 100, 0], [0, 60, 60])
+    curve = constructor(
+        sessions=days,
+        dv=tuple(array("q", [v * 10000 for v in row]) for row in values),
+        counts=tuple(array("i", row) for row in values),
+    )
+    value = curve.cumulative(NAMES[0], "PRE", 90)
+    assert value is not None
+    # Session answers are 50, 50, 60; interpolating the point medians would give 60.
+    assert value.dollar_volume == value.trade_count == 50

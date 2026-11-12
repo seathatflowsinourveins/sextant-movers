@@ -95,7 +95,7 @@ class Bar:
 
 @dataclass(frozen=True, slots=True)
 class BarPoll:
-    """One complete poll of the universe: what came back and what failed."""
+    """One complete poll: what came back and what failed."""
 
     bars: tuple[Bar, ...]
     requested: tuple[str, ...]
