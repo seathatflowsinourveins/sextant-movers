@@ -350,6 +350,28 @@ def test_kept_enabled_is_admission_setting_not_floor_setting(tmp_path) -> None:
     assert build(tmp_path, enabled=0).floor(at(420), Decimal(0)) == 150
 
 
+@pytest.mark.parametrize("name", ["display_start_minute_et", "weekly_usage_backoff_pct"])
+def test_negative_lower_bound_refused_by_row_before_policy_bounds(tmp_path, name) -> None:
+    with pytest.raises(ValueError, match=f"^{ROW}$"):
+        build(tmp_path, **{name: -1})
+
+
+@pytest.mark.parametrize("source", [None, 1])
+def test_kept_nontext_source_attributeerror(tmp_path, source) -> None:
+    doc = document()
+    doc["rows"][0]["source"] = source
+    with pytest.raises(AttributeError):
+        policy.CadencePolicy(write(tmp_path, doc))
+
+
+def test_kept_custom_window_observes_session_date_rollover(tmp_path) -> None:
+    gate = build(tmp_path, display_start_minute_et=0, display_end_minute_et=1440)
+    # _session's overnight flag is ignored, but its date rollover determines session validity.
+    assert gate.floor(at(1200, "2026-11-13"), Decimal(0)) is None
+    assert gate.floor(at(1200, "2026-11-15"), Decimal(0)) == 300
+    assert gate.floor(at(120, "2026-11-16"), Decimal(0)) == 300
+
+
 def test_wrapper_equal_and_both_keywords_required(tmp_path) -> None:
     registry = write(tmp_path, document())
     for minute in (239, 240, 420, 630, 900, 960, 1200):
