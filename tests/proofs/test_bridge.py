@@ -736,6 +736,7 @@ def test_all_reference_refusal_statements_are_kept():
         and isinstance(n.exc, ast.Call)
         and isinstance(n.exc.func, ast.Name)
         and n.exc.func.id == "BridgeError"
+        and isinstance(n.exc.args[0], ast.Constant)
     ]
     expected = [
         text + ("" if case == "generation_object" else SUFFIX) for case, text in FAULTS.items()
