@@ -774,6 +774,43 @@ def test_session_choice_checks_probe_name_exact_anchor_and_span(monkeypatch) -> 
     assert probes == [curves._session_start(d, scope) + NS for d in reversed(days)]
 
 
+@pytest.mark.parametrize("count", [0, -1, True, 1.0, "1", None])
+def test_session_choice_refuses_count_before_any_calendar_read(monkeypatch, count: Any) -> None:
+    def never(day, *, count):
+        raise AssertionError("the calendar was read before the count was checked")
+
+    monkeypatch.setattr(curves, "prior_sessions", never)
+    with pytest.raises(ValueError) as error:
+        choice(DAY, segment(), count=count, candidates=3)
+    assert str(error.value) == "A prior-session count is at least 1"
+
+
+def test_session_choice_span_and_anchor_are_exact_to_the_nanosecond(monkeypatch) -> None:
+    days = tuple(DAY + timedelta(days=i) for i in range(4))
+    scope = segment()
+    span = scope.end_ns - scope.start_ns
+    monkeypatch.setattr(curves, "prior_sessions", lambda day, *, count: days)
+
+    def find(probe):
+        day = datetime.fromtimestamp(probe // NS, ET).date()
+        anchor = curves._session_start(day, scope)
+        found = Segment("PRE", day, anchor, anchor + span, "zz")
+        index = days.index(day)
+        if index == 3:
+            found = replace(found, end_ns=found.end_ns - 1)
+        elif index == 2:
+            found = replace(found, start_ns=anchor + 1)
+        elif index == 1:
+            found = replace(found, start_ns=anchor - 1)
+        return found, day, anchor
+
+    monkeypatch.setattr(curves, "segment_start", find)
+    assert choice(DAY, scope, count=1, candidates=4) == days[:1]
+    with pytest.raises(ValueError) as error:
+        choice(DAY, scope, count=2, candidates=4)
+    assert str(error.value) == "fewer than 2 usable prior PRE sessions"
+
+
 # A complete passing prefix ends above this seeded session-choice extension.
 def session_choice_cases() -> list[list[Any]]:
     import random
