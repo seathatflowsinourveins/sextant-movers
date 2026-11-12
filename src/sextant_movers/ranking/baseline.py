@@ -41,6 +41,7 @@ from itertools import pairwise
 from operator import attrgetter
 from statistics import median
 from types import MappingProxyType
+from typing import Protocol
 
 from exchange_calendars import ExchangeCalendar, get_calendar
 from nautilus_trader.core.datetime import dt_to_unix_nanos
@@ -156,6 +157,29 @@ class BaselineValue:
     sessions: int
     known_at: int
     provenance: str
+
+
+class Baseline(Protocol):
+    """The baseline members read by the publisher and score engine."""
+
+    @property
+    def provenance(self) -> str: ...
+
+    @property
+    def identity(self) -> str: ...
+
+    @property
+    def known_at(self) -> int: ...
+
+    @property
+    def feed(self) -> str: ...
+
+    @property
+    def latest_session(self) -> date | None: ...
+
+    def cumulative(
+        self, symbol: str, segment: str, offset_s: int | Decimal
+    ) -> BaselineValue | None: ...
 
 
 Curve = tuple[BaselineSample, ...]
