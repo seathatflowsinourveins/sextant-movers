@@ -222,7 +222,7 @@ jobs:
           printf '%s  %s\n' bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c "$RUNNER_TEMP/review-bun.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/review-bun.zip" -d "$RUNNER_TEMP/review-bun"
       - id: review
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
+        uses: anthropics/claude-code-action@6d5ae526d25ce88daa2200be073e1a373167f064 # v1.0.265
         with:
           path_to_bun_executable: ${{ runner.temp }}/review-bun/bun-linux-x64/bun
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
